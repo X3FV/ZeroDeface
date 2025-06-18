@@ -1,0 +1,15 @@
+{
+    "target": "http://vulnerable-site.com",
+    "scan_date": "2023-11-15T14:30:00.123456",
+    "vulnerabilities": [
+        {
+            "category": "File Upload Vulnerability",
+            "description": "File upload possible at /upload.php - test.html accessible at http://vulnerable-site.com/uploads/test.html",
+            "exploit": "curl -F 'file=@test.html' http://vulnerable-site.com/upload.php",
+            "proof": "<html>DEFACED_BY_ZEROSCOPE_TEST..."
+        }
+    ],
+    "uploaded_files": [
+        "http://vulnerable-site.com/uploads/test.html"
+    ]
+}
