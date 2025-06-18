@@ -18,7 +18,7 @@ class DefacementScanner:
         self.target_url = target_url.rstrip('/')
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) DefaceScanner/1.0',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ZeroDeface/1.0',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
         })
         self.vulnerabilities = []
@@ -36,7 +36,20 @@ class DefacementScanner:
             'joomla': [('admin', 'admin'), ('admin', 'password')],
             'drupal': [('admin', 'admin'), ('admin', 'password')]
         }
-        self.test_content = "DEFACED_BY_ZEROSCOPE_TEST"
+        self.test_content = "DEFACED_BY_ZERODEFACE_TEST"
+
+    def print_banner(self):
+        banner = r"""
+__________                 ________          _____                     
+\____    /___________  ____\______ \   _____/ ____\____    ____  ____  
+  /     // __ \_  __ \/  _ \|    |  \_/ __ \   __\\__  \ _/ ___\/ __ \ 
+ /     /\  ___/|  | \(  <_> )    `   \  ___/|  |   / __ \\  \__\  ___/ 
+/_______ \___  >__|   \____/_______  /\___  >__|  (____  /\___  >___  >
+        \/   \/                    \/     \/           \/     \/    \/ 
+        """
+        print("\033[1;31m" + banner + "\033[0m")
+        print("\033[1;37mZeroDeface - Website Defacement Vulnerability Scanner\033[0m")
+        print("\033[1;33mVersion 1.0 | Ethical Use Only | Safe Simulation Mode\033[0m\n")
 
     def log_vulnerability(self, category, description, exploit=None, proof=None):
         vuln = {
@@ -47,7 +60,7 @@ class DefacementScanner:
             'proof': proof
         }
         self.vulnerabilities.append(vuln)
-        print(f"[!] {category} found: {description}")
+        print(f"\033[1;31m[!] {category} found:\033[0m {description}")
 
     def crawl_for_forms(self):
         try:
@@ -68,18 +81,12 @@ class DefacementScanner:
         
         for filename, content_type, content in test_files:
             try:
-                # Prepare the file upload
                 files = {'file': (filename, content, content_type)}
-                
-                # Submit the form with our test file
                 upload_url = urljoin(self.target_url, action_url)
                 response = self.session.post(upload_url, files=files, verify=False, timeout=15)
                 
-                # Check if upload was successful
                 if response.status_code in [200, 201, 302]:
-                    # Try to find the uploaded file in the response
                     if filename in response.text:
-                        # Try to access the uploaded file directly
                         file_url = urljoin(upload_url, filename)
                         file_response = self.session.get(file_url, verify=False, timeout=10)
                         
@@ -95,7 +102,6 @@ class DefacementScanner:
                             return True
             except Exception as e:
                 print(f"[-] Error testing upload for {filename}: {e}")
-        
         return False
 
     def scan_upload_vulnerabilities(self):
@@ -103,17 +109,12 @@ class DefacementScanner:
         forms = self.crawl_for_forms()
         
         for form in forms:
-            # Check if form has file upload capability
             if form.find('input', {'type': 'file'}):
-                action = form.get('action', '')
-                if not action:
-                    action = self.target_url
-                
+                action = form.get('action', '') or self.target_url
                 print(f"[*] Found file upload form at {action}")
                 if self.test_file_upload(form, action):
                     return True
         
-        # Also check common upload paths
         common_upload_paths = ['upload', 'file-upload', 'upload-file', 'admin/upload']
         for path in common_upload_paths:
             upload_url = urljoin(self.target_url, path)
@@ -121,7 +122,6 @@ class DefacementScanner:
                 response = self.session.get(upload_url, verify=False, timeout=10)
                 if response.status_code == 200 and 'upload' in response.text.lower():
                     print(f"[*] Found potential upload endpoint at {upload_url}")
-                    # Create a dummy form to test
                     class DummyForm:
                         def __init__(self, action):
                             self.attrs = {'action': action}
@@ -129,7 +129,6 @@ class DefacementScanner:
                         return True
             except:
                 continue
-        
         return False
 
     def scan_exposed_editors(self):
@@ -141,7 +140,6 @@ class DefacementScanner:
             try:
                 response = self.session.get(editor_url, verify=False, timeout=10)
                 if response.status_code == 200:
-                    # Check for common editor indicators
                     editor_indicators = ['CKEditor', 'TinyMCE', 'wysiwyg', 'contenteditable']
                     if any(indicator in response.text for indicator in editor_indicators):
                         self.log_vulnerability(
@@ -152,28 +150,22 @@ class DefacementScanner:
                         )
                         found = True
                         
-                        # Try to simulate content submission if it's an editor
                         if 'TinyMCE' in response.text:
                             self.test_tinymce_editor(editor_url)
                         elif 'CKEditor' in response.text:
                             self.test_ckeditor(editor_url)
             except Exception as e:
                 print(f"[-] Error checking {editor_url}: {e}")
-        
         return found
 
     def test_tinymce_editor(self, editor_url):
         try:
-            # Try to find the form that TinyMCE might be using
             response = self.session.get(editor_url, verify=False, timeout=10)
             soup = BeautifulSoup(response.text, 'html.parser')
             form = soup.find('form')
             if form:
                 action = form.get('action', editor_url)
-                data = {
-                    'content': self.test_content,
-                    'submit': 'save'
-                }
+                data = {'content': self.test_content, 'submit': 'save'}
                 response = self.session.post(action, data=data, verify=False, timeout=15)
                 if response.status_code == 200 and self.test_content in response.text:
                     self.log_vulnerability(
@@ -187,7 +179,6 @@ class DefacementScanner:
 
     def test_ckeditor(self, editor_url):
         try:
-            # Check for file upload functionality in CKEditor
             upload_url = urljoin(editor_url, 'filemanager/upload/')
             response = self.session.get(upload_url, verify=False, timeout=10)
             if response.status_code == 200:
@@ -217,7 +208,6 @@ class DefacementScanner:
                     )
                     found = True
                     
-                    # Try default credentials based on CMS detection
                     if 'wp-admin' in admin_url.lower():
                         self.test_default_credentials('wordpress', admin_url)
                     elif 'administrator' in admin_url.lower():
@@ -226,18 +216,13 @@ class DefacementScanner:
                         self.test_default_credentials('drupal', admin_url)
             except Exception as e:
                 print(f"[-] Error checking {admin_url}: {e}")
-        
         return found
 
     def test_default_credentials(self, cms_type, login_url):
         if cms_type in self.default_credentials:
             for username, password in self.default_credentials[cms_type]:
                 try:
-                    data = {
-                        'username': username,
-                        'password': password,
-                        'submit': 'login'
-                    }
+                    data = {'username': username, 'password': password, 'submit': 'login'}
                     response = self.session.post(login_url, data=data, verify=False, timeout=15)
                     if 'dashboard' in response.text.lower() or 'logout' in response.text.lower():
                         self.log_vulnerability(
@@ -259,21 +244,17 @@ class DefacementScanner:
             response = self.session.get(self.target_url, verify=False, timeout=10)
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Find all links on the page
             for link in soup.find_all('a', href=True):
                 href = link['href']
                 if '?' in href:
-                    # This is a URL with parameters
                     base_url = href.split('?')[0]
                     params = href.split('?')[1]
                     
-                    # Test each parameter
                     for param in params.split('&'):
                         if '=' in param:
                             param_name = param.split('=')[0]
                             test_url = f"{base_url}?{param_name}={self.test_content}"
                             
-                            # Request the modified URL
                             tampered_response = self.session.get(test_url, verify=False, timeout=10)
                             if self.test_content in tampered_response.text:
                                 self.log_vulnerability(
@@ -285,7 +266,6 @@ class DefacementScanner:
                                 found = True
         except Exception as e:
             print(f"[-] Error scanning for parameter tampering: {e}")
-        
         return found
 
     def scan_api_endpoints(self):
@@ -299,7 +279,6 @@ class DefacementScanner:
         for api_path in common_api_paths:
             api_url = urljoin(self.target_url, api_path)
             try:
-                # First try GET request
                 response = self.session.get(api_url, verify=False, timeout=10)
                 if response.status_code in [200, 201]:
                     self.log_vulnerability(
@@ -310,7 +289,6 @@ class DefacementScanner:
                     )
                     found = True
                 
-                # Then try POST with test data
                 data = {'content': self.test_content}
                 response = self.session.post(api_url, json=data, verify=False, timeout=15)
                 if response.status_code in [200, 201]:
@@ -323,7 +301,6 @@ class DefacementScanner:
                     found = True
             except Exception as e:
                 print(f"[-] Error checking {api_url}: {e}")
-        
         return found
 
     def generate_report(self, filename):
@@ -342,7 +319,6 @@ class DefacementScanner:
             print(f"[-] Error saving report: {e}")
 
     def cleanup(self):
-        # Attempt to remove any test files we uploaded
         for file_url in self.uploaded_files:
             try:
                 self.session.delete(file_url, verify=False, timeout=10)
@@ -351,22 +327,44 @@ class DefacementScanner:
                 print(f"[-] Failed to clean up test file at {file_url}")
 
 def main():
-    parser = argparse.ArgumentParser(description='Website Defacement Vulnerability Scanner')
+    scanner = DefacementScanner("")
+    scanner.print_banner()
+
+    parser = argparse.ArgumentParser(
+        description='ZeroDeface - Website Defacement Vulnerability Scanner',
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog="""\033[1;34m
+Examples:
+  Full scan:       python deface_scanner.py --url http://example.com --all
+  Upload test:     python deface_scanner.py --url http://example.com --upload-test --simulate
+  Admin check:     python deface_scanner.py --url http://example.com --admin-scan --report scan.json
+\033[0m"""
+    )
+    
     parser.add_argument('--url', required=True, help='Target URL to scan')
-    parser.add_argument('--upload-test', action='store_true', help='Run file upload checks')
-    parser.add_argument('--scan-editors', action='store_true', help='Find open content editors')
-    parser.add_argument('--admin-scan', action='store_true', help='Scan for admin panels and default creds')
+    parser.add_argument('--upload-test', action='store_true', help='Test file upload vulnerabilities')
+    parser.add_argument('--scan-editors', action='store_true', help='Find exposed content editors')
+    parser.add_argument('--admin-scan', action='store_true', help='Scan admin panels + test default creds')
     parser.add_argument('--param-tamper', action='store_true', help='Test parameter tampering')
-    parser.add_argument('--api-scan', action='store_true', help='Scan for vulnerable API endpoints')
-    parser.add_argument('--simulate', action='store_true', help='Simulate defacement with test content')
-    parser.add_argument('--report', help='Save results to a report file')
-    parser.add_argument('--all', action='store_true', help='Run all scans')
+    parser.add_argument('--api-scan', action='store_true', help='Scan vulnerable API endpoints')
+    parser.add_argument('--all', action='store_true', help='Run all vulnerability checks')
+    parser.add_argument('--simulate', action='store_true', help='Safe simulation mode')
+    parser.add_argument('--report', help='Save results to JSON file')
+    parser.add_argument('--verbose', action='store_true', help='Show detailed scan progress')
+    parser.add_argument('--quiet', action='store_true', help='Only show critical findings')
+    parser.add_argument('--timeout', type=int, default=10, help='Request timeout (seconds)')
+    parser.add_argument('--proxy', help='Use HTTP proxy (e.g., http://localhost:8080)')
+    parser.add_argument('--threads', type=int, default=5, help='Concurrent threads')
     
     args = parser.parse_args()
     
-    scanner = DefacementScanner(args.url)
-    
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(1)
+
     try:
+        scanner = DefacementScanner(args.url)
+        
         if args.all or args.upload_test:
             scanner.scan_upload_vulnerabilities()
         
@@ -386,20 +384,19 @@ def main():
             scanner.generate_report(args.report)
         
         if args.simulate and scanner.vulnerabilities:
-            print("\n[+] Simulation complete. Vulnerabilities found:")
+            print("\n\033[1;32m[+] Simulation complete. Vulnerabilities found:\033[0m")
             for vuln in scanner.vulnerabilities:
-                print(f"- {vuln['category']}: {vuln['description']}")
+                print(f"- \033[1;33m{vuln['category']}:\033[0m {vuln['description']}")
                 if vuln['exploit']:
-                    print(f"  Exploit: {vuln['exploit']}")
+                    print(f"  \033[1;34mExploit:\033[0m {vuln['exploit']}")
         
-        # Clean up any test files
         scanner.cleanup()
         
         if not scanner.vulnerabilities:
-            print("[+] No vulnerabilities found.")
+            print("\033[1;32m[+] No vulnerabilities found.\033[0m")
     
     except KeyboardInterrupt:
-        print("\n[!] Scan interrupted by user")
+        print("\n\033[1;33m[!] Scan interrupted by user\033[0m")
         scanner.cleanup()
         sys.exit(1)
 
