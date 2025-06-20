@@ -68,6 +68,29 @@ __________                 ________          _____
         self.vulnerabilities.append(vuln)
         print(f"\033[1;31m[!] {category} found:\033[0m {description}")
 
+    def generate_report(self, filename):
+        report = {
+            'target': self.target_url,
+            'scan_date': datetime.now().isoformat(),
+            'vulnerabilities': self.vulnerabilities,
+            'uploaded_files': self.uploaded_files
+        }
+        
+        try:
+            with open(filename, 'w') as f:
+                json.dump(report, f, indent=2)
+            print(f"[+] Report saved to {filename}")
+        except Exception as e:
+            print(f"[-] Error saving report: {e}")
+
+    def cleanup(self):
+        for file_url in self.uploaded_files:
+            try:
+                self.session.delete(file_url, verify=False, timeout=10)
+                print(f"[*] Cleaned up test file at {file_url}")
+            except:
+                print(f"[-] Failed to clean up test file at {file_url}")
+
     def crawl_for_forms(self):
         try:
             response = self.session.get(self.target_url, verify=False, timeout=10)
@@ -185,8 +208,6 @@ __________                 ________          _____
                 except Exception as e:
                     print(f"[-] Error testing credentials {username}/{password}: {e}")
         return False
-
-    # [Rest of your existing methods remain unchanged...]
 
 def main():
     scanner = DefacementScanner("")
