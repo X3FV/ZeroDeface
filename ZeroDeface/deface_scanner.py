@@ -134,6 +134,206 @@ __________                 ________          _____
                 print(f"[-] Error testing upload for {filename}: {e}")
         return False
 
+    def scan_upload_vulnerability(self):  # Note: Singular 'vulnerability'
+        print("[*] Scanning for file upload vulnerabilities...")
+        forms = self.crawl_for_forms()
+        
+        for form in forms:
+            if form.find('input', {'type': 'file'}):
+                action = form.get('action', '') or self.target_url
+                print(f"[*] Found file upload form at {action}")
+                if self.test_file_upload(form, action):
+                    return True
+        
+        common_upload_paths = ['upload', 'file-upload', 'upload-file', 'admin/upload']
+        for path in common_upload_paths:
+            upload_url = urljoin(self.target_url, path)
+            try:
+                response = self.session.get(upload_url, verify=False, timeout=10)
+                if response.status_code == 200 and 'upload' in response.text.lower():
+                    print(f"[*] Found potential upload endpoint at {upload_url}")
+                    class DummyForm:
+                        def __init__(self, action):
+                            self.attrs = {'action': action}
+                    if self.test_file_upload(DummyForm(upload_url), upload_url):
+                        return True
+            except:
+                continue
+        return False
+
+    def scan_exposed_editors(self):
+        print("[*] Scanning for exposed content editors...")
+        found = False
+        
+        for editor_path in self.common_editors:
+            editor_url = urljoin(self.target_url, editor_path)
+            try:
+                response = self.session.get(editor_url, verify=False, timeout=10)
+                if response.status_code == 200:
+                    editor_indicators = ['CKEditor', 'TinyMCE', 'wysiwyg', 'contenteditable']
+                    if any(indicator in response.text for indicator in editor_indicators):
+                        self.log_vulnerability(
+                            "Exposed Content Editor",
+                            f"Exposed editor found at {editor_url}",
+                            exploit=f"Visit {editor_url} directly",
+                            proof=response.text[:200] + "..."
+                        )
+                        found = True
+                        
+                        if 'TinyMCE' in response.text:
+                            self.test_tinymce_editor(editor_url)
+                        elif 'CKEditor' in response.text:
+                            self.test_ckeditor(editor_url)
+            except Exception as e:
+                print(f"[-] Error checking {editor_url}: {e}")
+        return found
+
+    def test_tinymce_editor(self, editor_url):
+        try:
+            response = self.session.get(editor_url, verify=False, timeout=10)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            form = soup.find('form')
+            if form:
+                action = form.get('action', editor_url)
+                data = {'content': self.test_content, 'submit': 'save'}
+                response = self.session.post(action, data=data, verify=False, timeout=15)
+                if response.status_code == 200 and self.test_content in response.text:
+                    self.log_vulnerability(
+                        "Content Editor Submission",
+                        f"Content can be submitted to {action} without authentication",
+                        exploit=f"curl -X POST -d 'content={self.test_content}' {action}",
+                        proof=response.text[:200] + "..."
+                    )
+        except Exception as e:
+            print(f"[-] Error testing TinyMCE editor: {e}")
+
+    def test_ckeditor(self, editor_url):
+        try:
+            upload_url = urljoin(editor_url, 'filemanager/upload/')
+            response = self.session.get(upload_url, verify=False, timeout=10)
+            if response.status_code == 200:
+                self.log_vulnerability(
+                    "CKEditor Upload",
+                    f"CKEditor upload endpoint accessible at {upload_url}",
+                    exploit=f"Visit {upload_url} to upload files",
+                    proof=response.text[:200] + "..."
+                )
+        except Exception as e:
+            print(f"[-] Error testing CKEditor: {e}")
+
+    def scan_admin_panels(self):
+        print("[*] Scanning for admin panels and CMS weaknesses...")
+        found = False
+        
+        for admin_path in self.common_admin_paths:
+            admin_url = urljoin(self.target_url, admin_path)
+            try:
+                response = self.session.get(admin_url, verify=False, timeout=10)
+                if response.status_code == 200:
+                    self.log_vulnerability(
+                        "Admin Panel Detected",
+                        f"Admin panel found at {admin_url}",
+                        exploit=f"Visit {admin_url} directly",
+                        proof=response.text[:200] + "..."
+                    )
+                    found = True
+                    
+                    if 'wp-admin' in admin_url.lower():
+                        self.test_default_credentials('wordpress', admin_url)
+                    elif 'administrator' in admin_url.lower():
+                        self.test_default_credentials('joomla', admin_url)
+                    elif 'drupal' in response.text.lower():
+                        self.test_default_credentials('drupal', admin_url)
+            except Exception as e:
+                print(f"[-] Error checking {admin_url}: {e}")
+        return found
+
+    def test_default_credentials(self, cms_type, login_url, deface_prone=False):
+        if cms_type in self.default_credentials:
+            for username, password in self.default_credentials[cms_type]:
+                try:
+                    data = {'username': username, 'password': password, 'submit': 'login'}
+                    response = self.session.post(login_url, data=data, verify=False, timeout=15)
+                    if 'dashboard' in response.text.lower() or 'logout' in response.text.lower():
+                        self.log_vulnerability(
+                            "Default Credentials",
+                            f"Default credentials work for {cms_type}: {username}/{password}",
+                            exploit=f"curl -X POST -d 'username={username}&password={password}' {login_url}",
+                            proof=f"Logged in successfully with {username}/{password}",
+                            is_deface_prone=deface_prone
+                        )
+                        return True
+                except Exception as e:
+                    print(f"[-] Error testing credentials {username}/{password}: {e}")
+        return False
+
+    def scan_parameter_tampering(self):
+        print("[*] Scanning for parameter tampering vulnerabilities...")
+        found = False
+        
+        try:
+            response = self.session.get(self.target_url, verify=False, timeout=10)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            for link in soup.find_all('a', href=True):
+                href = link['href']
+                if '?' in href:
+                    base_url = href.split('?')[0]
+                    params = href.split('?')[1]
+                    
+                    for param in params.split('&'):
+                        if '=' in param:
+                            param_name = param.split('=')[0]
+                            test_url = f"{base_url}?{param_name}={self.test_content}"
+                            
+                            tampered_response = self.session.get(test_url, verify=False, timeout=10)
+                            if self.test_content in tampered_response.text:
+                                self.log_vulnerability(
+                                    "Parameter Tampering",
+                                    f"Parameter {param_name} is reflected in page content at {base_url}",
+                                    exploit=f"Visit {test_url}",
+                                    proof=tampered_response.text[:200] + "..."
+                                )
+                                found = True
+        except Exception as e:
+            print(f"[-] Error scanning for parameter tampering: {e}")
+        return found
+
+    def scan_api_endpoints(self):
+        print("[*] Scanning for vulnerable API/admin endpoints...")
+        found = False
+        common_api_paths = [
+            'api/update', 'admin/save', 'api/content', 'api/pages',
+            'admin/api', 'rest/api', 'graphql', 'admin/update'
+        ]
+        
+        for api_path in common_api_paths:
+            api_url = urljoin(self.target_url, api_path)
+            try:
+                response = self.session.get(api_url, verify=False, timeout=10)
+                if response.status_code in [200, 201]:
+                    self.log_vulnerability(
+                        "API Endpoint Accessible",
+                        f"API endpoint accessible at {api_url}",
+                        exploit=f"curl -X GET {api_url}",
+                        proof=response.text[:200] + "..."
+                    )
+                    found = True
+                
+                data = {'content': self.test_content}
+                response = self.session.post(api_url, json=data, verify=False, timeout=15)
+                if response.status_code in [200, 201]:
+                    self.log_vulnerability(
+                        "API Endpoint Writable",
+                        f"API endpoint accepts data at {api_url}",
+                        exploit=f"curl -X POST -H 'Content-Type: application/json' -d '{{\"content\":\"{self.test_content}\"}}' {api_url}",
+                        proof=response.text[:200] + "..."
+                    )
+                    found = True
+            except Exception as e:
+                print(f"[-] Error checking {api_url}: {e}")
+        return found
+
     def scan_deface_prone(self):
         """Specialized scan for vulnerabilities that commonly lead to defacements"""
         print("\n[*] Starting defacement-prone vulnerability scan")
@@ -190,25 +390,6 @@ __________                 ________          _____
             except Exception as e:
                 print(f"[-] Error checking {admin_url}: {e}")
 
-    def test_default_credentials(self, cms_type, login_url, deface_prone=False):
-        if cms_type in self.default_credentials:
-            for username, password in self.default_credentials[cms_type]:
-                try:
-                    data = {'username': username, 'password': password, 'submit': 'login'}
-                    response = self.session.post(login_url, data=data, verify=False, timeout=15)
-                    if 'dashboard' in response.text.lower() or 'logout' in response.text.lower():
-                        self.log_vulnerability(
-                            "Default Credentials",
-                            f"Default credentials work for {cms_type}: {username}/{password}",
-                            exploit=f"curl -X POST -d 'username={username}&password={password}' {login_url}",
-                            proof=f"Logged in successfully with {username}/{password}",
-                            is_deface_prone=deface_prone
-                        )
-                        return True
-                except Exception as e:
-                    print(f"[-] Error testing credentials {username}/{password}: {e}")
-        return False
-
 def main():
     scanner = DefacementScanner("")
     scanner.print_banner()
@@ -252,14 +433,14 @@ Examples:
         if args.deface_prone:
             scanner.scan_deface_prone()
         elif args.all:
-            scanner.scan_upload_vulnerabilities()
+            scanner.scan_upload_vulnerability()  # Fixed to singular
             scanner.scan_exposed_editors()
             scanner.scan_admin_panels()
             scanner.scan_parameter_tampering()
             scanner.scan_api_endpoints()
         else:
             if args.upload_test:
-                scanner.scan_upload_vulnerabilities()
+                scanner.scan_upload_vulnerability()  # Fixed to singular
             if args.scan_editors:
                 scanner.scan_exposed_editors()
             if args.admin_scan:
