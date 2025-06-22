@@ -253,7 +253,7 @@ __________                 ________          _____
     def generate_defacement_content(self):
         """Generate random defacement content"""
         template = random.choice(self.defacement_templates)
-        return template.replace(
+        return template.replace()
             "{RANDOM_ID}", str(random.randint(10000,99999))
             .replace("{TIMESTAMP}", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
