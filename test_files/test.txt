@@ -1,0 +1,16 @@
+SECURITY TEST FILE - DEFACEMENT SIMULATION
+=========================================
+
+This file was uploaded as part of a security assessment.
+
+If you can see this content, the website accepts .txt file uploads
+and serves them with plaintext MIME type.
+
+TEST_ID: ZS-TXT-{{RANDOM_8DIGIT}}
+
+ACTION REQUIRED:
+1. Investigate file upload functionality
+2. Implement file type verification
+3. Restrict upload directory execution
+
+This is not an actual defacement.
